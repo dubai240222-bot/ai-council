@@ -23,6 +23,7 @@ TIMEZONE = ZoneInfo(os.getenv("TIMEZONE", "Europe/Istanbul"))
 BOT_USERNAME = os.getenv("BOT_USERNAME", "carservise_bot")
 OWNER_CONTACT_URL = os.getenv("OWNER_CONTACT_URL", f"https://t.me/{BOT_USERNAME}")
 RENT_BOT_URL = os.getenv("RENT_BOT_URL", OWNER_CONTACT_URL)
+WEB_CABINET_URL = os.getenv("WEB_CABINET_URL", "http://45.93.137.72:8000/login")
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN не задан. Создай .env по примеру .env.example")
@@ -185,6 +186,7 @@ def super_menu():
         [
             [KeyboardButton("👤 Арендаторы"), KeyboardButton("➕ Арендатор")],
             [KeyboardButton("📣 Рекламный кабинет"), KeyboardButton("📊 Общая статистика")],
+            [KeyboardButton("🌐 Веб-кабинет")],
         ],
         resize_keyboard=True,
     )
@@ -196,6 +198,7 @@ def tenant_menu():
             [KeyboardButton("📢 Мои группы"), KeyboardButton("➕ Группа")],
             [KeyboardButton("📝 Мои объявления"), KeyboardButton("➕ Объявление")],
             [KeyboardButton("📊 Статистика")],
+            [KeyboardButton("🌐 Веб-кабинет")],
         ],
         resize_keyboard=True,
     )
@@ -207,15 +210,16 @@ def super_tenant_menu():
             [KeyboardButton("📢 Мои группы"), KeyboardButton("➕ Группа")],
             [KeyboardButton("📝 Мои объявления"), KeyboardButton("➕ Объявление")],
             [KeyboardButton("📊 Статистика")],
+            [KeyboardButton("🌐 Веб-кабинет")],
             [KeyboardButton("⬅️ Меню владельца")],
         ],
         resize_keyboard=True,
     )
 
 
-TENANT_MENU_BUTTONS = {"📢 Мои группы", "➕ Группа", "📝 Мои объявления", "➕ Объявление", "📊 Статистика"}
+TENANT_MENU_BUTTONS = {"📢 Мои группы", "➕ Группа", "📝 Мои объявления", "➕ Объявление", "📊 Статистика", "🌐 Веб-кабинет"}
 TENANT_FLOW_STEPS = {"add_group", "ad_media", "ad_album_collect", "ad_edit_text", "ad_start", "ad_end", "ad_interval"}
-SUPER_MENU_BUTTONS = {"👤 Арендаторы", "➕ Арендатор", "📣 Рекламный кабинет", "📊 Общая статистика"}
+SUPER_MENU_BUTTONS = {"👤 Арендаторы", "➕ Арендатор", "📣 Рекламный кабинет", "📊 Общая статистика", "🌐 Веб-кабинет"}
 
 
 def no_access_keyboard():
@@ -225,6 +229,10 @@ def no_access_keyboard():
             [InlineKeyboardButton("📞 Связаться с владельцем", url=OWNER_CONTACT_URL)],
         ]
     )
+
+
+def web_cabinet_keyboard():
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🌐 Открыть веб-кабинет", url=WEB_CABINET_URL)]])
 
 
 def add_bot_to_group_keyboard():
@@ -244,6 +252,16 @@ def add_bot_to_group_keyboard():
             ],
             [InlineKeyboardButton("✅ Проверить мои группы", callback_data="tenant_groups")],
         ]
+    )
+
+
+async def send_web_cabinet_link(message):
+    await message.reply_text(
+        "🌐 Веб-кабинет на сайте\n\n"
+        "Там удобнее делать сложные действия: создавать и редактировать рекламу, выбирать группы, "
+        "настраивать расписание, смотреть отчёты и остаток доступа.\n\n"
+        "В Telegram оставляем быстрые команды: группы, список объявлений, запуск/пауза и уведомления.",
+        reply_markup=web_cabinet_keyboard(),
     )
 
 
@@ -367,6 +385,10 @@ async def handle_super(update, context, text):
         await update.message.reply_text("📣 Рекламный кабинет: группы, объявления и расписание публикаций", reply_markup=super_tenant_menu())
         return
 
+    if text == "🌐 Веб-кабинет":
+        await send_web_cabinet_link(update.message)
+        return
+
     if text in TENANT_MENU_BUTTONS or step in TENANT_FLOW_STEPS:
         tenant = ensure_super_tenant()
         await handle_tenant(update, context, tenant, text)
@@ -459,6 +481,10 @@ async def handle_tenant(update, context, tenant, text):
     if step and text in TENANT_MENU_BUTTONS:
         context.user_data.clear()
         step = None
+
+    if text == "🌐 Веб-кабинет":
+        await send_web_cabinet_link(update.message)
+        return
 
     if text == "➕ Группа":
         context.user_data["step"] = "add_group"

@@ -93,6 +93,7 @@ Owner login is configured in `.env`:
 WEB_OWNER_LOGIN=owner
 WEB_OWNER_PASSWORD=change-this-password
 WEB_SECRET=change-this-long-random-secret
+WEB_CABINET_URL=https://your-domain.example/login
 ```
 
 Owner can set renter web logins/passwords. Renters can log in while their paid access is active and see their groups, ads, publication counts, and access end date.
