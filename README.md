@@ -28,6 +28,7 @@ If the bot token was shown in chats or screenshots, regenerate it in `@BotFather
 ## Local Files
 
 - `bot.py` - main bot code
+- `web_admin.py` - simple desktop web cabinet for owner and renters
 - `requirements.txt` - Python dependencies
 - `.env.example` - environment template
 - `deploy.example.ps1` - safe deploy template
@@ -75,3 +76,23 @@ The deploy script should:
 2. Copy `bot.py` to VPS.
 3. Restart `reklama-bot`.
 4. Show service status.
+
+## Web Admin Preview
+
+The first web admin version is a mini-site for PC usage.
+
+Run locally or on VPS:
+
+```bash
+uvicorn web_admin:app --host 0.0.0.0 --port 8000
+```
+
+Owner login is configured in `.env`:
+
+```env
+WEB_OWNER_LOGIN=owner
+WEB_OWNER_PASSWORD=change-this-password
+WEB_SECRET=change-this-long-random-secret
+```
+
+Owner can set renter web logins/passwords. Renters can log in while their paid access is active and see their groups, ads, publication counts, and access end date.

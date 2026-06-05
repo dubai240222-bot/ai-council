@@ -12,6 +12,8 @@ Turn the working Telegram autopost bot into a convenient product for group admin
 - Add package logic for paid placements: 50, 100, 200 posts.
 - Add reports for admins: published, remaining, end date.
 - Prepare a desktop web admin panel for PC usage.
+- Add create/edit ad workflows to the web admin panel.
+- Add HTTPS/reverse proxy setup for the web admin panel on VPS.
 
 ## Safety Rules
 
