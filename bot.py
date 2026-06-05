@@ -228,13 +228,13 @@ def add_bot_to_group_keyboard():
             [
                 InlineKeyboardButton(
                     "➕ Добавить в группу",
-                    url=f"https://t.me/{BOT_USERNAME}?startgroup=connect",
+                    url=f"https://t.me/{BOT_USERNAME}?startgroup=connect&admin=delete_messages+invite_users+pin_messages",
                 )
             ],
             [
                 InlineKeyboardButton(
                     "📣 Добавить в канал",
-                    url=f"https://t.me/{BOT_USERNAME}?startchannel=connect",
+                    url=f"https://t.me/{BOT_USERNAME}?startchannel&admin=post_messages+edit_messages+delete_messages",
                 )
             ],
             [InlineKeyboardButton("✅ Проверить мои группы", callback_data="tenant_groups")],
@@ -434,7 +434,10 @@ async def send_groups_list(message, tenant):
     if not groups:
         await message.reply_text(
             "Группы пока не добавлены.\n\n"
-            "Нажмите «Добавить в группу» или «Добавить в канал», затем отправьте там команду /register_group.",
+            "Нажмите «Добавить в группу» или «Добавить в канал», затем отправьте там команду /register_group.\n\n"
+            "Если кнопка не открылась, используйте ссылки:\n"
+            f"Группа: https://t.me/{BOT_USERNAME}?startgroup=connect&admin=delete_messages+invite_users+pin_messages\n"
+            f"Канал: https://t.me/{BOT_USERNAME}?startchannel&admin=post_messages+edit_messages+delete_messages",
             reply_markup=add_bot_to_group_keyboard(),
         )
         return
@@ -456,6 +459,9 @@ async def handle_tenant(update, context, tenant, text):
             "3. Назначьте бота администратором с правом публиковать сообщения.\n"
             "4. В этой группе/канале отправьте команду <code>/register_group</code>.\n"
             "5. Вернитесь сюда и нажмите «Мои группы».\n\n"
+            "Если кнопки не открываются, используйте ссылки:\n"
+            f"Группа: https://t.me/{BOT_USERNAME}?startgroup=connect&amp;admin=delete_messages+invite_users+pin_messages\n"
+            f"Канал: https://t.me/{BOT_USERNAME}?startchannel&amp;admin=post_messages+edit_messages+delete_messages\n\n"
             "Запасной ручной способ: введите ID и название сообщением сюда:\n"
             "<code>-1001234567890 Моя группа</code>",
             parse_mode=ParseMode.HTML,
@@ -488,7 +494,10 @@ async def handle_tenant(update, context, tenant, text):
         if not groups:
             await update.message.reply_text(
                 "Сначала подключите группу или канал.\n\n"
-                "Нажмите «Добавить в группу» или «Добавить в канал», затем отправьте там команду /register_group.",
+                "Нажмите «Добавить в группу» или «Добавить в канал», затем отправьте там команду /register_group.\n\n"
+                "Если кнопка не открылась, используйте ссылки:\n"
+                f"Группа: https://t.me/{BOT_USERNAME}?startgroup=connect&admin=delete_messages+invite_users+pin_messages\n"
+                f"Канал: https://t.me/{BOT_USERNAME}?startchannel&admin=post_messages+edit_messages+delete_messages",
                 reply_markup=add_bot_to_group_keyboard(),
             )
             return
