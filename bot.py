@@ -884,29 +884,6 @@ async def show_ads(update, tenant):
         await update.message.reply_text("Объявлений пока нет.")
         return
     for ad in ads:
-        status = "✅" if ad["active"] else "⏸"
-        preview = ad["text"] or ad["caption"] or f"[{ad['media_type']}]"
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("⏸/▶️", callback_data=f"ad_toggle_{ad['id']}"), InlineKeyboardButton("🗑", callback_data=f"ad_delete_{ad['id']}")]])
-        await update.message.reply_text(
-            f"{status} #{ad['id']} | {ad['group_title']}\n{fmt(ad['start_at'])} - {fmt(ad['end_at'])}\n⏱ {ad['interval_minutes']} мин\n📨 {ad['published_count']}\n\n{preview[:300]}",
-            reply_markup=keyboard,
-        )
-
-
-async def show_ads(update, tenant):
-    with db() as conn:
-        ads = conn.execute(
-            """
-            SELECT ads.*, groups.title group_title
-            FROM ads JOIN groups ON groups.id = ads.group_id
-            WHERE ads.tenant_id = ? ORDER BY ads.id DESC
-            """,
-            (tenant["id"],),
-        ).fetchall()
-    if not ads:
-        await update.message.reply_text("Объявлений пока нет.")
-        return
-    for ad in ads:
         await send_ad_card(update.message, ad)
 
 
@@ -1069,7 +1046,12 @@ async def handle_tenant_callback(q, context, tenant, data):
             await reply_to_callback(q, "Не удалось скопировать объявление.")
             return
         schedule_ad(context.application, new_ad_id)
-        await reply_to_callback(q, f"Объявление скопировано в выбранную группу. Новый номер: #{new_ad_id}")
+        await reply_to_callback(
+            q,
+            f"✅ Копия создана.\n"
+            f"Новый номер: #{new_ad_id}\n\n"
+            "Она будет публиковаться по тому же расписанию, что и исходное объявление.",
+        )
         return
 
     if data.startswith("ad_clone_"):
@@ -1115,9 +1097,10 @@ async def handle_tenant_callback(q, context, tenant, data):
             conn.execute("UPDATE ads SET active = ? WHERE id = ?", (active, ad_id))
         if active:
             schedule_ad(context.application, ad_id)
+            await reply_to_callback(q, f"▶️ Объявление #{ad_id} запущено. Оно осталось в списке «Мои объявления».")
         else:
             remove_job(ad_id)
-        await reply_to_callback(q, "Готово.")
+            await reply_to_callback(q, f"⏸ Объявление #{ad_id} поставлено на паузу. Оно не удалено.")
         return
 
     if data.startswith("ad_delete_"):
@@ -1126,33 +1109,6 @@ async def handle_tenant_callback(q, context, tenant, data):
             conn.execute("DELETE FROM ads WHERE id = ? AND tenant_id = ?", (ad_id, tenant["id"]))
         remove_job(ad_id)
         await reply_to_callback(q, "Удалено.")
-
-
-_old_handle_tenant_callback = handle_tenant_callback
-
-
-async def handle_tenant_callback(q, context, tenant, data):
-    if data.startswith("ad_toggle_"):
-        ad_id = int(data.split("_")[2])
-        with db() as conn:
-            ad = conn.execute(
-                "SELECT * FROM ads WHERE id = ? AND tenant_id = ?",
-                (ad_id, tenant["id"]),
-            ).fetchone()
-            if not ad:
-                await reply_to_callback(q, "Объявление не найдено.")
-                return
-            active = 0 if ad["active"] else 1
-            conn.execute("UPDATE ads SET active = ? WHERE id = ?", (active, ad_id))
-        if active:
-            schedule_ad(context.application, ad_id)
-            await reply_to_callback(q, f"Объявление #{ad_id} запущено. Оно осталось в списке «Мои объявления».")
-        else:
-            remove_job(ad_id)
-            await reply_to_callback(q, f"Объявление #{ad_id} поставлено на паузу. Оно не удалено и осталось в списке «Мои объявления».")
-        return
-    await _old_handle_tenant_callback(q, context, tenant, data)
-
 
 async def reply_to_callback(q, text, reply_markup=None):
     try:
@@ -1170,81 +1126,6 @@ async def reply_to_callback(q, text, reply_markup=None):
         logger.warning("Callback response failed: %s", exc)
     if q.message:
         await q.message.reply_text(text, reply_markup=reply_markup)
-
-
-_previous_handle_tenant_callback = handle_tenant_callback
-
-
-async def handle_tenant_callback(q, context, tenant, data):
-    if data.startswith("ad_clone_to_"):
-        _, _, _, ad_id_raw, group_id_raw = data.split("_")
-        new_ad_id = clone_ad_to_group(tenant["id"], int(ad_id_raw), int(group_id_raw))
-        if not new_ad_id:
-            await reply_to_callback(q, "Не удалось скопировать объявление.")
-            return
-        schedule_ad(context.application, new_ad_id)
-        await reply_to_callback(
-            q,
-            f"✅ Копия создана.\n"
-            f"Новый номер: #{new_ad_id}\n\n"
-            "Она будет публиковаться по тому же расписанию, что и исходное объявление.",
-        )
-        return
-
-    if data.startswith("ad_clone_"):
-        ad_id = int(data.split("_")[2])
-        with db() as conn:
-            ad = conn.execute(
-                "SELECT * FROM ads WHERE id = ? AND tenant_id = ?",
-                (ad_id, tenant["id"]),
-            ).fetchone()
-            groups = conn.execute(
-                "SELECT * FROM groups WHERE tenant_id = ? AND id != ? ORDER BY title",
-                (tenant["id"], ad["group_id"] if ad else 0),
-            ).fetchall()
-        if not ad:
-            await reply_to_callback(q, "Объявление не найдено.")
-            return
-        if not groups:
-            await reply_to_callback(q, "Других групп пока нет. Сначала добавьте или зарегистрируйте ещё одну группу.")
-            return
-        keyboard = InlineKeyboardMarkup(
-            [[InlineKeyboardButton(g["title"], callback_data=f"ad_clone_to_{ad_id}_{g['id']}")] for g in groups]
-            + [[InlineKeyboardButton("Отмена", callback_data="noop")]]
-        )
-        await reply_to_callback(q, "В какую группу скопировать это объявление?", reply_markup=keyboard)
-        return
-
-    if data.startswith("ad_toggle_"):
-        ad_id = int(data.split("_")[2])
-        with db() as conn:
-            ad = conn.execute(
-                "SELECT * FROM ads WHERE id = ? AND tenant_id = ?",
-                (ad_id, tenant["id"]),
-            ).fetchone()
-            if not ad:
-                await reply_to_callback(q, "Объявление не найдено.")
-                return
-            active = 0 if ad["active"] else 1
-            conn.execute("UPDATE ads SET active = ? WHERE id = ?", (active, ad_id))
-        if active:
-            schedule_ad(context.application, ad_id)
-            await reply_to_callback(q, f"▶️ Объявление #{ad_id} запущено. Оно осталось в списке «Мои объявления».")
-        else:
-            remove_job(ad_id)
-            await reply_to_callback(q, f"⏸ Объявление #{ad_id} поставлено на паузу. Оно не удалено.")
-        return
-
-    if data.startswith("ad_delete_"):
-        ad_id = int(data.split("_")[2])
-        with db() as conn:
-            conn.execute("DELETE FROM ads WHERE id = ? AND tenant_id = ?", (ad_id, tenant["id"]))
-        remove_job(ad_id)
-        await reply_to_callback(q, f"🗑 Объявление #{ad_id} удалено.")
-        return
-
-    await _previous_handle_tenant_callback(q, context, tenant, data)
-
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -1279,31 +1160,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("ad_"):
         await handle_tenant_callback(q, context, tenant, data)
         return
-    if data.startswith("ad_group_"):
-        group_id = int(data.split("_")[2])
-        context.user_data["step"] = "ad_media"
-        context.user_data["new_ad"] = {"group_id": group_id}
-        await reply_to_callback(q, "Отправьте объявление: текст, фото, видео, GIF, документ или альбом 2-10 фото.")
-    elif data.startswith("ad_toggle_"):
-        ad_id = int(data.split("_")[2])
-        with db() as conn:
-            ad = conn.execute("SELECT * FROM ads WHERE id = ? AND tenant_id = ?", (ad_id, tenant["id"])).fetchone()
-            if not ad:
-                await reply_to_callback(q, "Объявление не найдено.")
-                return
-            active = 0 if ad["active"] else 1
-            conn.execute("UPDATE ads SET active = ? WHERE id = ?", (active, ad_id))
-        if active:
-            schedule_ad(context.application, ad_id)
-        else:
-            remove_job(ad_id)
-        await reply_to_callback(q, "Готово.")
-    elif data.startswith("ad_delete_"):
-        ad_id = int(data.split("_")[2])
-        with db() as conn:
-            conn.execute("DELETE FROM ads WHERE id = ? AND tenant_id = ?", (ad_id, tenant["id"]))
-        remove_job(ad_id)
-        await reply_to_callback(q, "🗑 Удалено.")
 
 
 def remove_job(ad_id):
@@ -1404,28 +1260,7 @@ async def post_ad(app, ad_id):
         remove_job(ad_id)
         return
     try:
-        if ad["media_type"] == "text":
-            await app.bot.send_message(ad["chat_id"], ad["text_html"] or ad["text"], parse_mode=ParseMode.HTML, read_timeout=90, write_timeout=90, connect_timeout=20, pool_timeout=20)
-        elif ad["media_type"] == "photo":
-            await app.bot.send_photo(ad["chat_id"], ad["file_id"], caption=ad["caption_html"] or ad["caption"], parse_mode=ParseMode.HTML, read_timeout=90, write_timeout=90, connect_timeout=20, pool_timeout=20)
-        elif ad["media_type"] == "video":
-            await app.bot.send_video(ad["chat_id"], ad["file_id"], caption=ad["caption_html"] or ad["caption"], parse_mode=ParseMode.HTML, read_timeout=90, write_timeout=90, connect_timeout=20, pool_timeout=20)
-        elif ad["media_type"] == "animation":
-            await app.bot.send_animation(ad["chat_id"], ad["file_id"], caption=ad["caption_html"] or ad["caption"], parse_mode=ParseMode.HTML, read_timeout=90, write_timeout=90, connect_timeout=20, pool_timeout=20)
-        elif ad["media_type"] == "document":
-            await app.bot.send_document(ad["chat_id"], ad["file_id"], caption=ad["caption_html"] or ad["caption"], parse_mode=ParseMode.HTML, read_timeout=90, write_timeout=90, connect_timeout=20, pool_timeout=20)
-        elif ad["media_type"] == "album":
-            files = json.loads(ad["file_id"])
-            if len(files) == 1:
-                await app.bot.send_photo(ad["chat_id"], files[0], caption=ad["caption_html"] or ad["caption"], parse_mode=ParseMode.HTML, read_timeout=90, write_timeout=90, connect_timeout=20, pool_timeout=20)
-            else:
-                media = []
-                for index, file_id in enumerate(files):
-                    if index == 0:
-                        media.append(InputMediaPhoto(file_id, caption=ad["caption_html"] or ad["caption"], parse_mode=ParseMode.HTML))
-                    else:
-                        media.append(InputMediaPhoto(file_id))
-                await app.bot.send_media_group(ad["chat_id"], media, read_timeout=90, write_timeout=90, connect_timeout=20, pool_timeout=20)
+        await send_ad_content(app.bot, ad)
         with db() as conn:
             conn.execute("UPDATE ads SET published_count = published_count + 1 WHERE id = ?", (ad_id,))
             conn.execute("INSERT INTO publish_logs (ad_id, published_at, status) VALUES (?, ?, 'ok')", (ad_id, now_dt().isoformat()))
