@@ -201,7 +201,12 @@ def tenant_menu():
 
 def super_tenant_menu():
     return ReplyKeyboardMarkup(
-        tenant_menu().keyboard + [[KeyboardButton("⬅️ Меню владельца")]],
+        [
+            [KeyboardButton("📢 Мои группы"), KeyboardButton("➕ Группа")],
+            [KeyboardButton("📝 Мои объявления"), KeyboardButton("➕ Объявление")],
+            [KeyboardButton("📊 Статистика")],
+            [KeyboardButton("⬅️ Меню владельца")],
+        ],
         resize_keyboard=True,
     )
 
