@@ -251,19 +251,39 @@ def web_cabinet_keyboard():
     return InlineKeyboardMarkup([[InlineKeyboardButton("🌐 Открыть веб-кабинет", url=WEB_CABINET_URL)]])
 
 
-def add_bot_to_group_keyboard():
+def resolve_bot_username(context=None):
+    if context:
+        cached = context.application.bot_data.get("bot_username")
+        if cached:
+            return cached
+        username = getattr(context.application.bot, "username", None)
+        if username:
+            return username
+    return BOT_USERNAME
+
+
+def group_add_links(bot_username):
+    username = (bot_username or BOT_USERNAME).lstrip("@")
+    return {
+        "group": f"https://t.me/{username}?startgroup=connect&admin=delete_messages+invite_users+pin_messages",
+        "channel": f"https://t.me/{username}?startchannel=connect&admin=post_messages+edit_messages+delete_messages",
+    }
+
+
+def add_bot_to_group_keyboard(bot_username):
+    links = group_add_links(bot_username)
     return InlineKeyboardMarkup(
         [
             [
                 InlineKeyboardButton(
                     "➕ Добавить в группу",
-                    url=f"https://t.me/{BOT_USERNAME}?startgroup=connect&admin=delete_messages+invite_users+pin_messages",
+                    url=links["group"],
                 )
             ],
             [
                 InlineKeyboardButton(
                     "📣 Добавить в канал",
-                    url=f"https://t.me/{BOT_USERNAME}?startchannel&admin=post_messages+edit_messages+delete_messages",
+                    url=links["channel"],
                 )
             ],
             [InlineKeyboardButton("✅ Проверить мои группы", callback_data="tenant_groups")],
@@ -472,7 +492,8 @@ async def handle_super(update, context, text):
     await update.message.reply_text("Выберите действие в меню.", reply_markup=super_menu())
 
 
-async def send_groups_list(message, tenant):
+async def send_groups_list(message, tenant, bot_username):
+    links = group_add_links(bot_username)
     with db() as conn:
         groups = conn.execute("SELECT * FROM groups WHERE tenant_id = ? ORDER BY id DESC", (tenant["id"],)).fetchall()
     if not groups:
@@ -480,20 +501,22 @@ async def send_groups_list(message, tenant):
             "Группы пока не добавлены.\n\n"
             "Нажмите «Добавить в группу» или «Добавить в канал», затем отправьте там команду /register_group.\n\n"
             "Если кнопка не открылась, используйте ссылки:\n"
-            f"Группа: https://t.me/{BOT_USERNAME}?startgroup=connect&admin=delete_messages+invite_users+pin_messages\n"
-            f"Канал: https://t.me/{BOT_USERNAME}?startchannel&admin=post_messages+edit_messages+delete_messages",
-            reply_markup=add_bot_to_group_keyboard(),
+            f"Группа: {links['group']}\n"
+            f"Канал: {links['channel']}",
+            reply_markup=add_bot_to_group_keyboard(bot_username),
         )
         return
     await message.reply_text(
         "\n".join(f"#{g['id']} | <code>{g['chat_id']}</code> | {g['title']}" for g in groups),
         parse_mode=ParseMode.HTML,
-        reply_markup=add_bot_to_group_keyboard(),
+        reply_markup=add_bot_to_group_keyboard(bot_username),
     )
 
 
 async def handle_tenant(update, context, tenant, text):
     step = context.user_data.get("step")
+    bot_username = resolve_bot_username(context)
+    links = group_add_links(bot_username)
     if step and text in TENANT_MENU_BUTTONS:
         context.user_data.clear()
         step = None
@@ -512,12 +535,12 @@ async def handle_tenant(update, context, tenant, text):
             "4. В этой группе/канале отправьте команду <code>/register_group</code>.\n"
             "5. Вернитесь сюда и нажмите «Мои группы».\n\n"
             "Если кнопки не открываются, используйте ссылки:\n"
-            f"Группа: https://t.me/{BOT_USERNAME}?startgroup=connect&amp;admin=delete_messages+invite_users+pin_messages\n"
-            f"Канал: https://t.me/{BOT_USERNAME}?startchannel&amp;admin=post_messages+edit_messages+delete_messages\n\n"
+            f"Группа: {links['group'].replace('&', '&amp;')}\n"
+            f"Канал: {links['channel'].replace('&', '&amp;')}\n\n"
             "Запасной ручной способ: введите ID и название сообщением сюда:\n"
             "<code>-1001234567890 Моя группа</code>",
             parse_mode=ParseMode.HTML,
-            reply_markup=add_bot_to_group_keyboard(),
+            reply_markup=add_bot_to_group_keyboard(bot_username),
         )
         return
     if step == "add_group":
@@ -538,7 +561,7 @@ async def handle_tenant(update, context, tenant, text):
             await update.message.reply_text("❌ Пример: -1001234567890 Моя группа")
         return
     if text == "📢 Мои группы":
-        await send_groups_list(update.message, tenant)
+        await send_groups_list(update.message, tenant, bot_username)
         return
     if text == "➕ Объявление":
         with db() as conn:
@@ -548,9 +571,9 @@ async def handle_tenant(update, context, tenant, text):
                 "Сначала подключите группу или канал.\n\n"
                 "Нажмите «Добавить в группу» или «Добавить в канал», затем отправьте там команду /register_group.\n\n"
                 "Если кнопка не открылась, используйте ссылки:\n"
-                f"Группа: https://t.me/{BOT_USERNAME}?startgroup=connect&admin=delete_messages+invite_users+pin_messages\n"
-                f"Канал: https://t.me/{BOT_USERNAME}?startchannel&admin=post_messages+edit_messages+delete_messages",
-                reply_markup=add_bot_to_group_keyboard(),
+                f"Группа: {links['group']}\n"
+                f"Канал: {links['channel']}",
+                reply_markup=add_bot_to_group_keyboard(bot_username),
             )
             return
         if len(groups) == 1:
@@ -1557,6 +1580,7 @@ async def post_ad(app, ad_id):
 
 async def post_init(app):
     init_db()
+    app.bot_data["bot_username"] = (getattr(app.bot, "username", None) or BOT_USERNAME).lstrip("@")
     scheduler.start()
     reschedule_all(app)
     scheduler.add_job(

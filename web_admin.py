@@ -628,6 +628,20 @@ def require_tenant(request):
     return tenant, session
 
 
+def owner_message_page(message, success=True):
+    css = "ok" if success else "bad"
+    title = "Готово" if success else "Ошибка"
+    return page(
+        title,
+        f"""
+        <h1>{title}</h1>
+        <div class="card {css}">{message}</div>
+        <p><a class="btn" href="/owner">Назад в кабинет владельца</a></p>
+        """,
+        session={"role": "owner"},
+    )
+
+
 @app.get("/owner", response_class=HTMLResponse)
 async def owner_dashboard(request: Request):
     session = require_owner(request)
@@ -696,6 +710,7 @@ async def owner_dashboard(request: Request):
         <div class="card">
           <h2>Управление рекламой</h2>
           <p class="muted">Владелец может открыть свой рекламный кабинет или зайти в кабинет любого арендатора как суперадмин.</p>
+          <p><a class="btn success" href="/owner/create_test_tenant">Создать тестового арендатора</a></p>
         </div>
         <div class="grid">
           {''.join(cabinet_cards) or '<div class="card">Кабинетов пока нет.</div>'}
@@ -738,6 +753,42 @@ async def owner_return(request: Request):
     response = redirect("/owner")
     response.set_cookie(SESSION_COOKIE, sign_payload({"role": "owner"}), httponly=True, samesite="lax")
     return response
+
+
+@app.get("/owner/create_test_tenant", response_class=HTMLResponse)
+async def owner_create_test_tenant(request: Request):
+    if not require_owner(request):
+        return redirect("/login")
+    login = "tenant_test"
+    password = "test1234"
+    with db() as conn:
+        existing = conn.execute("SELECT * FROM tenants WHERE web_login = ?", (login,)).fetchone()
+        if existing:
+            return owner_message_page(
+                f"Тестовый арендатор уже существует.<br><br>Логин: <code>{login}</code><br>Пароль: <code>{password}</code>",
+                success=True,
+            )
+        access_until = now_dt() + timedelta(days=90)
+        conn.execute(
+            """
+            INSERT INTO tenants (
+                telegram_user_id, name, access_until, is_active, created_at, web_login, web_password_hash
+            )
+            VALUES (?, ?, ?, 1, ?, ?, ?)
+            """,
+            (
+                -9000000001,
+                "Тест арендатор",
+                access_until.isoformat(),
+                now_dt().isoformat(),
+                login,
+                hash_password(password),
+            ),
+        )
+    return owner_message_page(
+        f"Тестовый арендатор создан.<br><br>Логин: <code>{login}</code><br>Пароль: <code>{password}</code>",
+        success=True,
+    )
 
 
 @app.post("/owner/credentials")
