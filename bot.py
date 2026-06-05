@@ -1398,6 +1398,30 @@ def reschedule_all(app):
         schedule_ad(app, ad_id)
 
 
+def sync_scheduler(app):
+    with db() as conn:
+        rows = conn.execute(
+            """
+            SELECT ads.id
+            FROM ads JOIN tenants ON tenants.id = ads.tenant_id
+            WHERE ads.active = 1
+              AND tenants.is_active = 1
+              AND tenants.access_until >= ?
+              AND ads.end_at >= ?
+            """,
+            (now_dt().isoformat(), now_dt().isoformat()),
+        ).fetchall()
+    active_ids = {row["id"] for row in rows}
+    current_ids = {int(job.id) for job in scheduler.get_jobs() if job.id.isdigit()}
+
+    for job in scheduler.get_jobs():
+        if job.id.isdigit() and int(job.id) not in active_ids:
+            job.remove()
+
+    for ad_id in active_ids - current_ids:
+        schedule_ad(app, ad_id)
+
+
 def should_notify_error(ad, error_text):
     if ad["last_error"] != error_text:
         return True
@@ -1473,6 +1497,13 @@ async def post_init(app):
     init_db()
     scheduler.start()
     reschedule_all(app)
+    scheduler.add_job(
+        sync_scheduler,
+        IntervalTrigger(seconds=30, timezone=TIMEZONE),
+        args=[app],
+        id="sync_scheduler",
+        replace_existing=True,
+    )
     logger.info("Bot started")
 
 
