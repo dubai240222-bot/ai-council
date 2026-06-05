@@ -4,6 +4,7 @@ import hmac
 import html
 import json
 import os
+import re
 import secrets
 import sqlite3
 from datetime import datetime, timedelta
@@ -129,6 +130,39 @@ def esc(value):
     return html.escape(str(value or ""))
 
 
+def plain_text(value):
+    value = re.sub(r"<br\s*/?>", "\n", str(value or ""), flags=re.IGNORECASE)
+    value = re.sub(r"</p\s*>", "\n", value, flags=re.IGNORECASE)
+    value = re.sub(r"<[^>]+>", "", value)
+    return html.unescape(value).strip()
+
+
+def rich_editor(name, value="", label="Текст объявления", placeholder="Введите рекламный текст..."):
+    field_id = f"editor_{name}"
+    return f"""
+      <label>{esc(label)}</label>
+      <div class="editor">
+        <div class="toolbar" data-target="{field_id}">
+          <button type="button" data-before="<b>" data-after="</b>"><b>B</b></button>
+          <button type="button" data-before="<i>" data-after="</i>"><i>I</i></button>
+          <button type="button" data-before="<u>" data-after="</u>"><u>U</u></button>
+          <button type="button" data-before="<s>" data-after="</s>"><s>S</s></button>
+          <button type="button" data-before="<code>" data-after="</code>">code</button>
+          <button type="button" data-before="<tg-spoiler>" data-after="</tg-spoiler>">Спойлер</button>
+          <button type="button" data-link="1">Ссылка</button>
+          <button type="button" data-insert="✅">✅</button>
+          <button type="button" data-insert="🔥">🔥</button>
+          <button type="button" data-insert="📞">📞</button>
+          <button type="button" data-insert="🌐">🌐</button>
+          <button type="button" data-insert="👇">👇</button>
+        </div>
+        <textarea id="{field_id}" class="rich-textarea" name="{name}" placeholder="{esc(placeholder)}" required>{esc(value)}</textarea>
+        <div class="preview-title">Предпросмотр текста</div>
+        <div class="telegram-preview" data-preview-for="{field_id}"></div>
+      </div>
+    """
+
+
 def redirect(path):
     return RedirectResponse(path, status_code=303)
 
@@ -195,8 +229,89 @@ def page(title, body, session=None):
     form.inline {{ display:inline-flex; gap:6px; align-items:center; flex-wrap:wrap; margin:2px 0; }}
     form.inline input {{ width:auto; min-width:90px; }}
     .preview {{ white-space:pre-wrap; background:#f8fafc; border:1px dashed #cbd5e1; border-radius:8px; padding:12px; }}
+    .editor {{ border:1px solid var(--line); border-radius:8px; background:#fbfdff; padding:10px; }}
+    .toolbar {{ display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px; }}
+    .toolbar button {{ padding:7px 9px; background:#eef2f7; color:#1f2937; border:1px solid #cbd5e1; }}
+    .toolbar button:hover {{ background:#dbeafe; border-color:#93c5fd; }}
+    .rich-textarea {{ min-height:220px; font-family:Arial, sans-serif; background:white; }}
+    .preview-title {{ margin:10px 0 6px; color:var(--muted); font-size:13px; font-weight:700; }}
+    .telegram-preview {{ min-height:80px; white-space:pre-wrap; background:#e9f7df; border:1px solid #bfdab2; border-radius:8px; padding:12px; line-height:1.35; }}
+    .telegram-preview a {{ color:#2563eb; }}
+    .telegram-spoiler {{ background:#111827; color:#111827; border-radius:3px; padding:0 3px; }}
     @media (max-width:720px) {{ header {{ padding:12px 14px; }} table {{ font-size:14px; }} th, td {{ padding:8px; }} }}
   </style>
+  <script>
+    function escapeHtml(value) {{
+      return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    }}
+    function telegramPreview(raw) {{
+      let value = escapeHtml(raw || "");
+      const pairs = [
+        ["b", "strong"],
+        ["strong", "strong"],
+        ["i", "em"],
+        ["em", "em"],
+        ["u", "u"],
+        ["s", "s"],
+        ["strike", "s"],
+        ["del", "s"],
+        ["code", "code"]
+      ];
+      for (const pair of pairs) {{
+        const source = pair[0];
+        const target = pair[1];
+        value = value.replace(new RegExp("&lt;" + source + "&gt;", "gi"), "<" + target + ">");
+        value = value.replace(new RegExp("&lt;/" + source + "&gt;", "gi"), "</" + target + ">");
+      }}
+      value = value.replace(/&lt;tg-spoiler&gt;/gi, '<span class="telegram-spoiler">');
+      value = value.replace(/&lt;\\/tg-spoiler&gt;/gi, "</span>");
+      value = value.replace(/&lt;a href=&quot;([^&]+)&quot;&gt;/gi, '<a href="$1" target="_blank">');
+      value = value.replace(/&lt;\\/a&gt;/gi, "</a>");
+      return value;
+    }}
+    function updatePreview(textarea) {{
+      const preview = document.querySelector('[data-preview-for="' + textarea.id + '"]');
+      if (preview) preview.innerHTML = telegramPreview(textarea.value);
+    }}
+    function wrapSelection(textarea, before, after) {{
+      const start = textarea.selectionStart || 0;
+      const end = textarea.selectionEnd || 0;
+      const selected = textarea.value.slice(start, end) || "текст";
+      textarea.value = textarea.value.slice(0, start) + before + selected + after + textarea.value.slice(end);
+      textarea.focus();
+      textarea.selectionStart = start + before.length;
+      textarea.selectionEnd = start + before.length + selected.length;
+      updatePreview(textarea);
+    }}
+    document.addEventListener("DOMContentLoaded", () => {{
+      document.querySelectorAll(".rich-textarea").forEach((textarea) => {{
+        textarea.addEventListener("input", () => updatePreview(textarea));
+        updatePreview(textarea);
+      }});
+      document.querySelectorAll(".toolbar button").forEach((button) => {{
+        button.addEventListener("click", () => {{
+          const toolbar = button.closest(".toolbar");
+          const textarea = document.getElementById(toolbar.dataset.target);
+          if (!textarea) return;
+          if (button.dataset.insert) {{
+            const start = textarea.selectionStart || 0;
+            textarea.value = textarea.value.slice(0, start) + button.dataset.insert + textarea.value.slice(start);
+            textarea.focus();
+            textarea.selectionStart = textarea.selectionEnd = start + button.dataset.insert.length;
+            updatePreview(textarea);
+            return;
+          }}
+          if (button.dataset.link) {{
+            const url = prompt("Вставьте ссылку, например https://t.me/username");
+            if (!url) return;
+            wrapSelection(textarea, '<a href="' + url + '">', "</a>");
+            return;
+          }}
+          wrapSelection(textarea, button.dataset.before || "", button.dataset.after || "");
+        }});
+      }});
+    }});
+  </script>
 </head>
 <body>
   <header><strong>Reklama Bot Admin</strong><nav>{nav(session)}</nav></header>
@@ -604,8 +719,7 @@ async def new_ad_get(request: Request):
           <form method="post" action="/cabinet/ads/new">
             <label>Группа или канал</label>
             <select name="group_id" required>{options}</select>
-            <label>Текст объявления</label>
-            <textarea name="text" placeholder="Введите рекламный текст..." required></textarea>
+            {rich_editor("text")}
             <div class="form-grid">
               <div><label>Старт</label><input type="datetime-local" name="start_at" value="{dt_input(minutes=10)}" required></div>
               <div><label>Окончание</label><input type="datetime-local" name="end_at" value="{dt_input(minutes=60*24)}" required></div>
@@ -627,7 +741,8 @@ async def new_ad_post(request: Request):
         return response
     data = await form_data(request)
     group_id = int(data["group_id"])
-    text = data.get("text", "").strip()
+    text_html = data.get("text", "").strip()
+    text = plain_text(text_html)
     start_at = parse_dt_input(data["start_at"])
     end_at = parse_dt_input(data["end_at"])
     interval = int(data["interval_minutes"])
@@ -649,7 +764,7 @@ async def new_ad_post(request: Request):
                 tenant["id"],
                 group_id,
                 text,
-                esc(text),
+                text_html,
                 start_at.isoformat(),
                 end_at.isoformat(),
                 interval,
@@ -674,7 +789,7 @@ async def edit_ad_get(request: Request, ad_id: int):
         f'<option value="{g["id"]}" {"selected" if g["id"] == ad["group_id"] else ""}>{esc(g["title"])}</option>'
         for g in groups
     )
-    content = ad["text"] if ad["media_type"] == "text" else ad["caption"]
+    content = (ad["text_html"] or ad["text"]) if ad["media_type"] == "text" else (ad["caption_html"] or ad["caption"])
     active_checked = "checked" if ad["active"] else ""
     media_note = (
         "<p class='muted'>Это медиа-объявление. На сайте сейчас можно редактировать подпись и расписание; замену фото/альбома пока оставляем через Telegram.</p>"
@@ -689,8 +804,7 @@ async def edit_ad_get(request: Request, ad_id: int):
           <form method="post" action="/cabinet/ads/{ad_id}/edit">
             <label>Группа или канал</label>
             <select name="group_id" required>{options}</select>
-            <label>{"Текст объявления" if ad["media_type"] == "text" else "Подпись к медиа"}</label>
-            <textarea name="content" required>{esc(content)}</textarea>
+            {rich_editor("content", content, "Текст объявления" if ad["media_type"] == "text" else "Подпись к медиа")}
             <div class="form-grid">
               <div><label>Старт</label><input type="datetime-local" name="start_at" value="{dt_input(ad['start_at'])}" required></div>
               <div><label>Окончание</label><input type="datetime-local" name="end_at" value="{dt_input(ad['end_at'])}" required></div>
@@ -717,7 +831,8 @@ async def edit_ad_post(request: Request, ad_id: int):
         return response
     data = await form_data(request)
     group_id = int(data["group_id"])
-    content = data.get("content", "").strip()
+    content_html = data.get("content", "").strip()
+    content = plain_text(content_html)
     start_at = parse_dt_input(data["start_at"])
     end_at = parse_dt_input(data["end_at"])
     interval = int(data["interval_minutes"])
@@ -740,7 +855,7 @@ async def edit_ad_post(request: Request, ad_id: int):
                 (
                     group_id,
                     content,
-                    esc(content),
+                    content_html,
                     start_at.isoformat(),
                     end_at.isoformat(),
                     interval,
@@ -761,7 +876,7 @@ async def edit_ad_post(request: Request, ad_id: int):
                 (
                     group_id,
                     content,
-                    esc(content),
+                    content_html,
                     start_at.isoformat(),
                     end_at.isoformat(),
                     interval,
