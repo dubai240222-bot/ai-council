@@ -1,0 +1,10 @@
+.env
+*.sqlite3
+*.sqlite3-*
+*.db
+backups/
+__pycache__/
+.venv/
+venv/
+*.pyc
+deploy.ps1
