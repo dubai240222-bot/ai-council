@@ -606,6 +606,7 @@ async def send_ad_preview(update, context):
             [InlineKeyboardButton("Все верно, дальше", callback_data="ad_preview_ok")],
             [InlineKeyboardButton("Исправить текст/подпись", callback_data="ad_preview_edit_text")],
             [InlineKeyboardButton("Заменить фото/материал", callback_data="ad_preview_edit")],
+            [InlineKeyboardButton("Выбрать другую группу", callback_data="ad_preview_change_group")],
             [InlineKeyboardButton("Отмена", callback_data="ad_cancel")],
         ]
     )
@@ -773,6 +774,8 @@ async def ask_final_confirmation(q, context, interval):
     keyboard = InlineKeyboardMarkup(
         [
             [InlineKeyboardButton("Запустить", callback_data="ad_confirm_start")],
+            [InlineKeyboardButton("Изменить расписание", callback_data="ad_schedule_restart")],
+            [InlineKeyboardButton("Вернуться к предпросмотру", callback_data="ad_back_to_preview")],
             [InlineKeyboardButton("Отмена", callback_data="ad_cancel")],
         ]
     )
@@ -927,6 +930,64 @@ async def handle_tenant_callback(q, context, tenant, data):
         context.user_data["step"] = "ad_media"
         context.user_data["new_ad"] = {"group_id": group_id}
         await reply_to_callback(q, "Отправьте исправленный материал: текст, фото, видео или альбом 2-10 фото.")
+        return
+
+    if data == "ad_preview_change_group":
+        new_ad = context.user_data.get("new_ad")
+        if not new_ad:
+            await reply_to_callback(q, "Черновик не найден. Начните добавление объявления заново.")
+            return
+        with db() as conn:
+            groups = conn.execute(
+                "SELECT * FROM groups WHERE tenant_id = ? ORDER BY title",
+                (tenant["id"],),
+            ).fetchall()
+        if not groups:
+            await reply_to_callback(q, "Сначала добавьте группу.")
+            return
+        keyboard = InlineKeyboardMarkup(
+            [[InlineKeyboardButton(g["title"], callback_data=f"ad_change_group_to_{g['id']}")] for g in groups]
+            + [[InlineKeyboardButton("Назад к предпросмотру", callback_data="ad_back_to_preview")]]
+        )
+        await reply_to_callback(q, "Выберите группу для этого объявления. Текст и фото сохранятся.", reply_markup=keyboard)
+        return
+
+    if data.startswith("ad_change_group_to_"):
+        group_id = int(data.split("_")[4])
+        if "new_ad" not in context.user_data:
+            await reply_to_callback(q, "Черновик не найден. Начните добавление объявления заново.")
+            return
+        with db() as conn:
+            group = conn.execute(
+                "SELECT * FROM groups WHERE id = ? AND tenant_id = ?",
+                (group_id, tenant["id"]),
+            ).fetchone()
+        if not group:
+            await reply_to_callback(q, "Группа не найдена.")
+            return
+        context.user_data["new_ad"]["group_id"] = group_id
+        context.user_data["step"] = "ad_preview"
+        await reply_to_callback(q, f"Группа изменена: {group['title']}. Сейчас снова покажу предпросмотр.")
+        await send_ad_preview(q, context)
+        return
+
+    if data == "ad_back_to_preview":
+        if "new_ad" not in context.user_data:
+            await reply_to_callback(q, "Черновик не найден. Начните добавление объявления заново.")
+            return
+        context.user_data["step"] = "ad_preview"
+        await send_ad_preview(q, context)
+        return
+
+    if data == "ad_schedule_restart":
+        if "new_ad" not in context.user_data:
+            await reply_to_callback(q, "Черновик не найден. Начните добавление объявления заново.")
+            return
+        for key in ("schedule_date", "schedule_hour", "pending_interval"):
+            context.user_data.pop(key, None)
+        context.user_data["new_ad"].pop("start_at", None)
+        context.user_data["new_ad"].pop("end_at", None)
+        await ask_schedule_date(q)
         return
 
     if data == "ad_album_done":
