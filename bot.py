@@ -21,6 +21,7 @@ SUPER_ADMIN_ID = int(os.getenv("SUPER_ADMIN_ID", "0"))
 DATABASE_PATH = os.getenv("DATABASE_PATH", "bot.sqlite3")
 TIMEZONE = ZoneInfo(os.getenv("TIMEZONE", "Europe/Istanbul"))
 BOT_USERNAME = os.getenv("BOT_USERNAME", "carservise_bot")
+OWNER_USERNAME = os.getenv("OWNER_USERNAME", "").strip().lstrip("@")
 OWNER_CONTACT_URL = os.getenv("OWNER_CONTACT_URL", f"https://t.me/{BOT_USERNAME}")
 RENT_BOT_URL = os.getenv("RENT_BOT_URL", OWNER_CONTACT_URL)
 WEB_CABINET_URL = os.getenv("WEB_CABINET_URL", "http://45.93.137.72:8000/login")
@@ -232,18 +233,24 @@ def super_tenant_menu():
 
 
 TENANT_MENU_BUTTONS = {"📢 Мои группы", "➕ Группа", "📝 Мои объявления", "➕ Объявление", "📊 Статистика", "🌐 Веб-кабинет"}
-TENANT_FLOW_STEPS = {"add_group", "ad_media", "ad_album_collect", "ad_edit_text", "ad_start", "ad_end", "ad_interval"}
+TENANT_FLOW_STEPS = {"add_group", "ad_media", "ad_album_collect", "ad_edit_text", "ad_caption_optional", "ad_start", "ad_end", "ad_interval"}
 SUPER_MENU_BUTTONS = {"👤 Арендаторы", "➕ Арендатор", "📣 Рекламный кабинет", "📊 Общая статистика", "🌐 Веб-кабинет"}
 
 
 def no_access_keyboard():
+    buttons = [
+        [InlineKeyboardButton("🔄 Проверить доступ / открыть меню", callback_data="open_main_menu")],
+        [InlineKeyboardButton("🌐 Открыть веб-кабинет", url=WEB_CABINET_URL)],
+    ]
+    if OWNER_USERNAME:
+        owner_url = f"https://t.me/{OWNER_USERNAME}"
+        buttons.append([InlineKeyboardButton("💳 Арендовать такого бота", url=owner_url)])
+        buttons.append([InlineKeyboardButton("📞 Связаться с владельцем", url=owner_url)])
+    else:
+        buttons.append([InlineKeyboardButton("💳 Арендовать такого бота", callback_data="rent_owner_fallback")])
+        buttons.append([InlineKeyboardButton("📞 Связаться с владельцем", callback_data="contact_owner_fallback")])
     return InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton("🔄 Проверить доступ / открыть меню", callback_data="open_main_menu")],
-            [InlineKeyboardButton("🌐 Открыть веб-кабинет", url=WEB_CABINET_URL)],
-            [InlineKeyboardButton("💳 Арендовать такого бота", url=RENT_BOT_URL)],
-            [InlineKeyboardButton("📞 Связаться с владельцем", url=OWNER_CONTACT_URL)],
-        ]
+        buttons
     )
 
 
@@ -283,11 +290,18 @@ def add_bot_to_group_keyboard(bot_username):
             [
                 InlineKeyboardButton(
                     "📣 Добавить в канал",
-                    url=links["channel"],
+                    callback_data="tenant_add_channel_help",
                 )
             ],
             [InlineKeyboardButton("✅ Проверить мои группы", callback_data="tenant_groups")],
         ]
+    )
+
+
+def add_bot_to_channel_keyboard(bot_username):
+    links = group_add_links(bot_username)
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("📣 Добавить в канал", url=links["channel"])]]
     )
 
 
@@ -324,6 +338,26 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML,
             reply_markup=no_access_keyboard(),
         )
+
+
+async def skip_caption(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or update.effective_chat.type != "private":
+        return
+    tenant = tenant_by_user(update.effective_user.id)
+    if not tenant_has_access(tenant):
+        await update.message.reply_text(
+            "У вас пока нет активного доступа к кабинету.",
+            reply_markup=no_access_keyboard(),
+        )
+        return
+    if context.user_data.get("step") != "ad_caption_optional" or "new_ad" not in context.user_data:
+        await update.message.reply_text("Сейчас пропуск подписи не нужен.")
+        return
+    new_ad = context.user_data["new_ad"]
+    new_ad["caption"] = ""
+    new_ad["caption_html"] = ""
+    context.user_data["step"] = "ad_preview"
+    await send_ad_preview(update, context)
 
 
 async def register_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -500,6 +534,8 @@ async def send_groups_list(message, tenant, bot_username):
         await message.reply_text(
             "Группы пока не добавлены.\n\n"
             "Нажмите «Добавить в группу» или «Добавить в канал», затем отправьте там команду /register_group.\n\n"
+            "Если при кнопке «Добавить в канал» Telegram показывает пустой экран, значит у вас пока нет каналов, где вы администратор. "
+            "Сначала создайте канал в Telegram и назначьте себя админом, затем вернитесь сюда.\n\n"
             "Если кнопка не открылась, используйте ссылки:\n"
             f"Группа: {links['group']}\n"
             f"Канал: {links['channel']}",
@@ -534,6 +570,8 @@ async def handle_tenant(update, context, tenant, text):
             "3. Назначьте бота администратором с правом публиковать сообщения.\n"
             "4. В этой группе/канале отправьте команду <code>/register_group</code>.\n"
             "5. Вернитесь сюда и нажмите «Мои группы».\n\n"
+            "Если при кнопке «Добавить в канал» Telegram показывает пустой экран, значит у вас пока нет каналов, где вы администратор. "
+            "Сначала создайте канал в Telegram и назначьте себя админом, затем вернитесь сюда.\n\n"
             "Если кнопки не открываются, используйте ссылки:\n"
             f"Группа: {links['group'].replace('&', '&amp;')}\n"
             f"Канал: {links['channel'].replace('&', '&amp;')}\n\n"
@@ -570,6 +608,8 @@ async def handle_tenant(update, context, tenant, text):
             await update.message.reply_text(
                 "Сначала подключите группу или канал.\n\n"
                 "Нажмите «Добавить в группу» или «Добавить в канал», затем отправьте там команду /register_group.\n\n"
+                "Если при кнопке «Добавить в канал» Telegram показывает пустой экран, значит у вас пока нет каналов, где вы администратор. "
+                "Сначала создайте канал в Telegram и назначьте себя админом, затем вернитесь сюда.\n\n"
                 "Если кнопка не открылась, используйте ссылки:\n"
                 f"Группа: {links['group']}\n"
                 f"Канал: {links['channel']}",
@@ -610,8 +650,19 @@ async def handle_tenant(update, context, tenant, text):
             await update.message.reply_text("Отправьте текст, фото, видео, GIF, документ или альбом 2-10 фото.")
             return
         context.user_data["new_ad"].update(media)
-        context.user_data["step"] = "ad_preview"
-        await send_ad_preview(update, context)
+        if media["media_type"] == "text":
+            context.user_data["step"] = "ad_preview"
+            await send_ad_preview(update, context)
+            return
+        if media.get("caption") or media.get("caption_html"):
+            context.user_data["step"] = "ad_preview"
+            await send_ad_preview(update, context)
+            return
+        context.user_data["step"] = "ad_caption_optional"
+        await update.message.reply_text(
+            "Отлично! Теперь отправь текст (подпись) к этому медиа.\n"
+            "Или нажми /skip если подпись не нужна."
+        )
         return
     if step == "ad_album_collect":
         if update.message.media_group_id == context.user_data.get("album_group_id") and update.message.photo:
@@ -645,6 +696,19 @@ async def handle_tenant(update, context, tenant, text):
                 return
             new_ad["caption"] = update.message.text or update.message.caption
             new_ad["caption_html"] = update.message.text_html or update.message.caption_html
+        context.user_data["step"] = "ad_preview"
+        await send_ad_preview(update, context)
+        return
+    if step == "ad_caption_optional":
+        new_ad = context.user_data["new_ad"]
+        if not (update.message.text or update.message.caption):
+            await update.message.reply_text(
+                "Отправь текст подписи обычным сообщением.\n"
+                "Если подпись не нужна — нажми /skip."
+            )
+            return
+        new_ad["caption"] = update.message.text or update.message.caption
+        new_ad["caption_html"] = update.message.text_html or update.message.caption_html
         context.user_data["step"] = "ad_preview"
         await send_ad_preview(update, context)
         return
@@ -1380,10 +1444,38 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=no_access_keyboard(),
         )
         return
+    if data == "rent_owner_fallback":
+        await reply_to_callback(
+            q,
+            "Для аренды напишите владельцу ваш Telegram ID:\n"
+            f"<code>{user_id}</code>",
+            reply_markup=no_access_keyboard(),
+        )
+        return
+    if data == "contact_owner_fallback":
+        await reply_to_callback(
+            q,
+            "Отправьте владельцу ваш ID:\n"
+            f"<code>{user_id}</code>",
+            reply_markup=no_access_keyboard(),
+        )
+        return
     if user_id == SUPER_ADMIN_ID:
         if data == "tenant_groups":
             await reply_to_callback(q, "Сейчас покажу подключенные группы.")
-            await send_groups_list(q.message, ensure_super_tenant())
+            await send_groups_list(q.message, ensure_super_tenant(), resolve_bot_username(context))
+            return
+        if data == "tenant_add_channel_help":
+            await reply_to_callback(
+                q,
+                "📣 Добавление в канал\n\n"
+                "Нажмите кнопку ниже. Если после нажатия Telegram показывает пустой список — значит у вас нет каналов где вы администратор.\n\n"
+                "Что сделать:\n"
+                "1. Создайте канал в Telegram\n"
+                "2. Назначьте себя администратором\n"
+                "3. Вернитесь сюда и нажмите снова",
+                reply_markup=add_bot_to_channel_keyboard(resolve_bot_username(context)),
+            )
             return
         if data.startswith("ad_"):
             await handle_tenant_callback(q, context, ensure_super_tenant(), data)
@@ -1417,7 +1509,19 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if data == "tenant_groups":
         await reply_to_callback(q, "Сейчас покажу подключенные группы.")
-        await send_groups_list(q.message, tenant)
+        await send_groups_list(q.message, tenant, resolve_bot_username(context))
+        return
+    if data == "tenant_add_channel_help":
+        await reply_to_callback(
+            q,
+            "📣 Добавление в канал\n\n"
+            "Нажмите кнопку ниже. Если после нажатия Telegram показывает пустой список — значит у вас нет каналов где вы администратор.\n\n"
+            "Что сделать:\n"
+            "1. Создайте канал в Telegram\n"
+            "2. Назначьте себя администратором\n"
+            "3. Вернитесь сюда и нажмите снова",
+            reply_markup=add_bot_to_channel_keyboard(resolve_bot_username(context)),
+        )
         return
     if data.startswith("ad_"):
         await handle_tenant_callback(q, context, tenant, data)
@@ -1606,6 +1710,7 @@ def main():
     )
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("register_group", register_group))
+    app.add_handler(CommandHandler("skip", skip_caption))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_message))
     app.run_polling(allowed_updates=Update.ALL_TYPES)
