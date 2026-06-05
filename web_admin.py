@@ -66,6 +66,9 @@ def init_web_db():
             conn.execute("ALTER TABLE tenants ADD COLUMN web_login TEXT")
         if "web_password_hash" not in tenant_columns:
             conn.execute("ALTER TABLE tenants ADD COLUMN web_password_hash TEXT")
+        ad_columns = {row["name"] for row in conn.execute("PRAGMA table_info(ads)").fetchall()}
+        if "updated_at" not in ad_columns:
+            conn.execute("ALTER TABLE ads ADD COLUMN updated_at TEXT")
         conn.execute(
             """
             CREATE UNIQUE INDEX IF NOT EXISTS idx_tenants_web_login
@@ -146,6 +149,8 @@ def nav(session):
             ("/cabinet/reports", "Отчёты"),
             ("/logout", "Выйти"),
         ]
+        if session.get("owner"):
+            links.insert(0, ("/owner/return", "Владелец"))
     return "".join(f'<a href="{href}">{label}</a>' for href, label in links)
 
 
@@ -304,6 +309,7 @@ async def owner_dashboard(request: Request):
               <td>{state}<br>до {fmt(tenant['access_until'])}</td>
               <td>{esc(tenant['web_login']) or '<span class="muted">не задан</span>'}</td>
               <td>
+                <a class="btn ghost" href="/owner/tenant/{tenant['id']}">Открыть кабинет</a>
                 <form class="inline" method="post" action="/owner/credentials">
                   <input type="hidden" name="tenant_id" value="{tenant['id']}">
                   <input name="login" placeholder="логин" value="{esc(tenant['web_login'])}">
@@ -342,6 +348,34 @@ async def owner_dashboard(request: Request):
         """,
         session=session,
     )
+
+
+@app.get("/owner/tenant/{tenant_id}")
+async def owner_open_tenant(request: Request, tenant_id: int):
+    if not require_owner(request):
+        return redirect("/login")
+    with db() as conn:
+        tenant = conn.execute("SELECT * FROM tenants WHERE id = ?", (tenant_id,)).fetchone()
+    if not tenant:
+        return redirect("/owner")
+    response = redirect("/cabinet")
+    response.set_cookie(
+        SESSION_COOKIE,
+        sign_payload({"role": "tenant", "tenant_id": tenant_id, "owner": True}),
+        httponly=True,
+        samesite="lax",
+    )
+    return response
+
+
+@app.get("/owner/return")
+async def owner_return(request: Request):
+    session = read_session(request)
+    if not session or not session.get("owner"):
+        return redirect("/login")
+    response = redirect("/owner")
+    response.set_cookie(SESSION_COOKIE, sign_payload({"role": "owner"}), httponly=True, samesite="lax")
+    return response
 
 
 @app.post("/owner/credentials")
@@ -504,6 +538,7 @@ async def cabinet_ads(request: Request):
               <td>{ad['interval_minutes']} мин<br>{ad['published_count']} постов</td>
               <td>{preview[:260]}</td>
               <td>
+                <a class="btn ghost" href="/cabinet/ads/{ad['id']}/edit">Редактировать</a>
                 <form class="inline" method="post" action="/cabinet/ads/toggle">
                   <input type="hidden" name="ad_id" value="{ad['id']}">
                   <button>{toggle_label}</button>
@@ -583,12 +618,136 @@ async def new_ad_post(request: Request):
             """
             INSERT INTO ads (
                 tenant_id, group_id, media_type, text, text_html,
-                start_at, end_at, interval_minutes, active, created_at
+                start_at, end_at, interval_minutes, active, created_at, updated_at
             )
-            VALUES (?, ?, 'text', ?, ?, ?, ?, ?, 1, ?)
+            VALUES (?, ?, 'text', ?, ?, ?, ?, ?, 1, ?, ?)
             """,
-            (tenant["id"], group_id, text, esc(text), start_at.isoformat(), end_at.isoformat(), interval, now_dt().isoformat()),
+            (
+                tenant["id"],
+                group_id,
+                text,
+                esc(text),
+                start_at.isoformat(),
+                end_at.isoformat(),
+                interval,
+                now_dt().isoformat(),
+                now_dt().isoformat(),
+            ),
         )
+    return redirect("/cabinet/ads")
+
+
+@app.get("/cabinet/ads/{ad_id}/edit", response_class=HTMLResponse)
+async def edit_ad_get(request: Request, ad_id: int):
+    tenant, session, response = tenant_guard(request)
+    if response:
+        return response
+    with db() as conn:
+        ad = conn.execute("SELECT * FROM ads WHERE id = ? AND tenant_id = ?", (ad_id, tenant["id"])).fetchone()
+        groups = conn.execute("SELECT * FROM groups WHERE tenant_id = ? ORDER BY title", (tenant["id"],)).fetchall()
+    if not ad:
+        return redirect("/cabinet/ads")
+    options = "".join(
+        f'<option value="{g["id"]}" {"selected" if g["id"] == ad["group_id"] else ""}>{esc(g["title"])}</option>'
+        for g in groups
+    )
+    content = ad["text"] if ad["media_type"] == "text" else ad["caption"]
+    active_checked = "checked" if ad["active"] else ""
+    media_note = (
+        "<p class='muted'>Это медиа-объявление. На сайте сейчас можно редактировать подпись и расписание; замену фото/альбома пока оставляем через Telegram.</p>"
+        if ad["media_type"] != "text"
+        else ""
+    )
+    return page(
+        f"Редактировать объявление #{ad_id}",
+        f"""
+        <h1>Редактировать объявление #{ad_id}</h1>
+        <div class="card">
+          <form method="post" action="/cabinet/ads/{ad_id}/edit">
+            <label>Группа или канал</label>
+            <select name="group_id" required>{options}</select>
+            <label>{"Текст объявления" if ad["media_type"] == "text" else "Подпись к медиа"}</label>
+            <textarea name="content" required>{esc(content)}</textarea>
+            <div class="form-grid">
+              <div><label>Старт</label><input type="datetime-local" name="start_at" value="{dt_input(ad['start_at'])}" required></div>
+              <div><label>Окончание</label><input type="datetime-local" name="end_at" value="{dt_input(ad['end_at'])}" required></div>
+              <div><label>Интервал, минут</label><input type="number" name="interval_minutes" value="{ad['interval_minutes']}" min="1" required></div>
+            </div>
+            <label><input type="checkbox" name="active" value="1" {active_checked} style="width:auto"> Объявление активно</label>
+            {media_note}
+            <p>
+              <button type="submit">Сохранить изменения</button>
+              <a class="btn ghost" href="/cabinet/ads">Отмена</a>
+              <a class="btn ghost" href="/cabinet/reports?ad_id={ad_id}">Отчёт</a>
+            </p>
+          </form>
+        </div>
+        """,
+        session=session,
+    )
+
+
+@app.post("/cabinet/ads/{ad_id}/edit")
+async def edit_ad_post(request: Request, ad_id: int):
+    tenant, session, response = tenant_guard(request)
+    if response:
+        return response
+    data = await form_data(request)
+    group_id = int(data["group_id"])
+    content = data.get("content", "").strip()
+    start_at = parse_dt_input(data["start_at"])
+    end_at = parse_dt_input(data["end_at"])
+    interval = int(data["interval_minutes"])
+    active = 1 if data.get("active") == "1" else 0
+    if not content or end_at <= start_at or interval < 1:
+        return redirect(f"/cabinet/ads/{ad_id}/edit")
+    with db() as conn:
+        ad = conn.execute("SELECT * FROM ads WHERE id = ? AND tenant_id = ?", (ad_id, tenant["id"])).fetchone()
+        group = conn.execute("SELECT * FROM groups WHERE id = ? AND tenant_id = ?", (group_id, tenant["id"])).fetchone()
+        if not ad or not group:
+            return redirect("/cabinet/ads")
+        if ad["media_type"] == "text":
+            conn.execute(
+                """
+                UPDATE ads
+                SET group_id = ?, text = ?, text_html = ?, start_at = ?, end_at = ?,
+                    interval_minutes = ?, active = ?, updated_at = ?
+                WHERE id = ? AND tenant_id = ?
+                """,
+                (
+                    group_id,
+                    content,
+                    esc(content),
+                    start_at.isoformat(),
+                    end_at.isoformat(),
+                    interval,
+                    active,
+                    now_dt().isoformat(),
+                    ad_id,
+                    tenant["id"],
+                ),
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE ads
+                SET group_id = ?, caption = ?, caption_html = ?, start_at = ?, end_at = ?,
+                    interval_minutes = ?, active = ?, updated_at = ?
+                WHERE id = ? AND tenant_id = ?
+                """,
+                (
+                    group_id,
+                    content,
+                    esc(content),
+                    start_at.isoformat(),
+                    end_at.isoformat(),
+                    interval,
+                    active,
+                    now_dt().isoformat(),
+                    ad_id,
+                    tenant["id"],
+                ),
+            )
     return redirect("/cabinet/ads")
 
 
@@ -602,7 +761,10 @@ async def ad_toggle(request: Request):
     with db() as conn:
         ad = conn.execute("SELECT * FROM ads WHERE id = ? AND tenant_id = ?", (ad_id, tenant["id"])).fetchone()
         if ad:
-            conn.execute("UPDATE ads SET active = ? WHERE id = ?", (0 if ad["active"] else 1, ad_id))
+            conn.execute(
+                "UPDATE ads SET active = ?, updated_at = ? WHERE id = ?",
+                (0 if ad["active"] else 1, now_dt().isoformat(), ad_id),
+            )
     return redirect("/cabinet/ads")
 
 

@@ -31,6 +31,7 @@ if not BOT_TOKEN:
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 scheduler = AsyncIOScheduler(timezone=TIMEZONE)
+scheduled_ad_versions = {}
 
 
 def now_dt():
@@ -130,6 +131,8 @@ def init_db():
             conn.execute("ALTER TABLE ads ADD COLUMN last_error_at TEXT")
         if "deleted_at" not in existing:
             conn.execute("ALTER TABLE ads ADD COLUMN deleted_at TEXT")
+        if "updated_at" not in existing:
+            conn.execute("ALTER TABLE ads ADD COLUMN updated_at TEXT")
 
         group_columns = {row["name"] for row in conn.execute("PRAGMA table_info(groups)").fetchall()}
         if "deleted_at" not in group_columns:
@@ -225,6 +228,8 @@ SUPER_MENU_BUTTONS = {"👤 Арендаторы", "➕ Арендатор", "�
 def no_access_keyboard():
     return InlineKeyboardMarkup(
         [
+            [InlineKeyboardButton("🔄 Проверить доступ / открыть меню", callback_data="open_main_menu")],
+            [InlineKeyboardButton("🌐 Открыть веб-кабинет", url=WEB_CABINET_URL)],
             [InlineKeyboardButton("💳 Арендовать такого бота", url=RENT_BOT_URL)],
             [InlineKeyboardButton("📞 Связаться с владельцем", url=OWNER_CONTACT_URL)],
         ]
@@ -1273,7 +1278,7 @@ async def handle_tenant_callback(q, context, tenant, data):
                 await reply_to_callback(q, "Объявление не найдено.")
                 return
             active = 0 if ad["active"] else 1
-            conn.execute("UPDATE ads SET active = ? WHERE id = ?", (active, ad_id))
+            conn.execute("UPDATE ads SET active = ?, updated_at = ? WHERE id = ?", (active, now_dt().isoformat(), ad_id))
         if active:
             schedule_ad(context.application, ad_id)
             await reply_to_callback(q, f"▶️ Объявление #{ad_id} запущено. Оно осталось в списке «Мои объявления».")
@@ -1311,6 +1316,26 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     data = q.data
     user_id = q.from_user.id
+    if data == "open_main_menu":
+        try:
+            await q.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        if user_id == SUPER_ADMIN_ID:
+            await q.message.reply_text("👑 Главное меню владельца.", reply_markup=super_menu())
+            return
+        tenant = tenant_by_user(user_id)
+        if tenant_has_access(tenant):
+            await q.message.reply_text(f"✅ Доступ активен до {fmt(tenant['access_until'])}", reply_markup=tenant_menu())
+            return
+        await q.message.reply_text(
+            "Пока нет активного доступа к кабинету.\n\n"
+            "Если вы уже оплатили доступ, отправьте владельцу бота ваш Telegram ID:\n"
+            f"<code>{user_id}</code>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=no_access_keyboard(),
+        )
+        return
     if user_id == SUPER_ADMIN_ID:
         if data == "tenant_groups":
             await reply_to_callback(q, "Сейчас покажу подключенные группы.")
@@ -1360,6 +1385,7 @@ def remove_job(ad_id):
         scheduler.remove_job(str(ad_id))
     except Exception:
         pass
+    scheduled_ad_versions.pop(int(ad_id), None)
 
 
 def schedule_ad(app, ad_id):
@@ -1374,10 +1400,12 @@ def schedule_ad(app, ad_id):
             (ad_id,),
         ).fetchone()
     if not ad or not ad["active"] or not ad["tenant_active"]:
+        scheduled_ad_versions.pop(int(ad_id), None)
         return
     start_at = datetime.fromisoformat(ad["start_at"])
     end_at = min(datetime.fromisoformat(ad["end_at"]), datetime.fromisoformat(ad["access_until"]))
     if end_at <= now_dt():
+        scheduled_ad_versions.pop(int(ad_id), None)
         return
     scheduler.add_job(
         post_ad,
@@ -1387,11 +1415,13 @@ def schedule_ad(app, ad_id):
         replace_existing=True,
         misfire_grace_time=300,
     )
+    scheduled_ad_versions[int(ad_id)] = ad["updated_at"] or ad["created_at"]
 
 
 def reschedule_all(app):
     for job in scheduler.get_jobs():
         job.remove()
+    scheduled_ad_versions.clear()
     with db() as conn:
         ad_ids = [r[0] for r in conn.execute("SELECT id FROM ads WHERE active = 1").fetchall()]
     for ad_id in ad_ids:
@@ -1402,7 +1432,7 @@ def sync_scheduler(app):
     with db() as conn:
         rows = conn.execute(
             """
-            SELECT ads.id
+            SELECT ads.id, ads.created_at, ads.updated_at
             FROM ads JOIN tenants ON tenants.id = ads.tenant_id
             WHERE ads.active = 1
               AND tenants.is_active = 1
@@ -1411,15 +1441,21 @@ def sync_scheduler(app):
             """,
             (now_dt().isoformat(), now_dt().isoformat()),
         ).fetchall()
-    active_ids = {row["id"] for row in rows}
+    active_versions = {row["id"]: row["updated_at"] or row["created_at"] for row in rows}
+    active_ids = set(active_versions)
     current_ids = {int(job.id) for job in scheduler.get_jobs() if job.id.isdigit()}
 
     for job in scheduler.get_jobs():
         if job.id.isdigit() and int(job.id) not in active_ids:
             job.remove()
+            scheduled_ad_versions.pop(int(job.id), None)
 
     for ad_id in active_ids - current_ids:
         schedule_ad(app, ad_id)
+
+    for ad_id in active_ids & current_ids:
+        if scheduled_ad_versions.get(ad_id) != active_versions[ad_id]:
+            schedule_ad(app, ad_id)
 
 
 def should_notify_error(ad, error_text):
