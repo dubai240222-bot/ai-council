@@ -188,7 +188,7 @@ def image_upload_block(current_file_id=""):
     )
     return f"""
       <label>Фото к рекламе</label>
-      <div class="upload-box">
+      <div class="upload-box" data-current-url="{esc(current_url)}">
         <input type="file" name="image" accept="image/png,image/jpeg,image/webp" class="image-input">
         <p class="muted">Можно добавить JPG, PNG или WebP до 10 MB. Альбомы 2-10 фото добавим следующим шагом.</p>
         {current}
@@ -224,6 +224,50 @@ def rich_editor(name, value="", label="Текст объявления", placeho
         <textarea id="{field_id}" class="rich-textarea" name="{name}" placeholder="{esc(placeholder)}" required>{esc(value)}</textarea>
         <div class="preview-title">Предпросмотр текста</div>
         <div class="telegram-preview" data-preview-for="{field_id}"></div>
+      </div>
+    """
+
+
+def interval_presets_block(selected="240"):
+    presets = [
+        ("30", "30 мин"),
+        ("60", "1 час"),
+        ("120", "2 часа"),
+        ("240", "4 часа"),
+        ("1440", "1 день"),
+    ]
+    current = str(selected or "240")
+    buttons = []
+    for value, label in presets:
+        active = " active" if value == current else ""
+        buttons.append(f'<button type="button" class="chip{active}" data-interval-value="{value}">{label}</button>')
+    return f'<div class="chip-row">{"".join(buttons)}</div>'
+
+
+def ad_form_preview_block(group_name="", start_value="", end_value="", interval_value="240", image_url=""):
+    image_html = (
+        f'<img class="tg-preview-image" src="{esc(image_url)}" alt="Превью фото" style="display:block">'
+        if image_url
+        else '<img class="tg-preview-image" alt="Превью фото">'
+    )
+    return f"""
+      <div class="preview-title">Предпросмотр объявления</div>
+      <div class="ad-form-preview"
+           data-group-name="{esc(group_name)}"
+           data-start="{esc(start_value)}"
+           data-end="{esc(end_value)}"
+           data-interval="{esc(str(interval_value))}">
+        <div class="tg-meta">
+          <div class="tg-avatar">R</div>
+          <div>
+            <div class="tg-group-name">Выберите группу</div>
+            <div class="tg-time-line">Старт и расписание пока не заполнены</div>
+          </div>
+        </div>
+        <div class="tg-preview-card">
+          {image_html}
+          <div class="tg-preview-text">Здесь появится текст объявления</div>
+        </div>
       </div>
     """
 
@@ -307,6 +351,17 @@ def page(title, body, session=None):
     .image-preview, .current-image img {{ display:none; max-width:360px; width:100%; max-height:260px; object-fit:contain; margin-top:10px; border:1px solid var(--line); border-radius:8px; background:white; }}
     .current-image img {{ display:block; }}
     .ad-thumb {{ display:block; width:92px; height:70px; object-fit:cover; border-radius:6px; border:1px solid var(--line); margin-bottom:6px; }}
+    .chip-row {{ display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }}
+    .chip {{ padding:8px 10px; background:#eef2f7; color:#1f2937; border:1px solid #cbd5e1; border-radius:999px; cursor:pointer; }}
+    .chip.active {{ background:#dbeafe; border-color:#93c5fd; color:#1d4ed8; }}
+    .ad-form-preview {{ background:#f8fafc; border:1px solid var(--line); border-radius:10px; padding:12px; }}
+    .tg-meta {{ display:flex; gap:10px; align-items:center; margin-bottom:10px; }}
+    .tg-avatar {{ width:38px; height:38px; border-radius:999px; background:#dcfce7; color:#166534; display:flex; align-items:center; justify-content:center; font-weight:700; }}
+    .tg-group-name {{ font-weight:700; }}
+    .tg-time-line {{ color:var(--muted); font-size:13px; }}
+    .tg-preview-card {{ background:#e9f7df; border:1px solid #bfdab2; border-radius:10px; overflow:hidden; }}
+    .tg-preview-image {{ display:none; width:100%; max-height:360px; object-fit:cover; background:#fff; }}
+    .tg-preview-text {{ padding:12px; white-space:pre-wrap; line-height:1.4; }}
     @media (max-width:720px) {{ header {{ padding:12px 14px; }} table {{ font-size:14px; }} th, td {{ padding:8px; }} }}
   </style>
   <script>
@@ -342,6 +397,63 @@ def page(title, body, session=None):
       const preview = document.querySelector('[data-preview-for="' + textarea.id + '"]');
       if (preview) preview.innerHTML = telegramPreview(textarea.value);
     }}
+    function formatDtInput(value) {{
+      if (!value) return "";
+      const parts = value.split("T");
+      if (parts.length !== 2) return value;
+      const date = parts[0].split("-");
+      const time = parts[1].slice(0, 5);
+      if (date.length !== 3) return value;
+      return date[2] + "." + date[1] + "." + date[0] + " " + time;
+    }}
+    function intervalLabel(value) {{
+      const minutes = parseInt(value || "0", 10);
+      if (!minutes || minutes < 1) return "Интервал не задан";
+      if (minutes % 1440 === 0) return "Каждые " + (minutes / 1440) + " дн.";
+      if (minutes % 60 === 0) return "Каждые " + (minutes / 60) + " ч.";
+      return "Каждые " + minutes + " мин.";
+    }}
+    function getImagePreviewSource(uploadBox) {{
+      if (!uploadBox) return "";
+      const input = uploadBox.querySelector(".image-input");
+      if (input && input.files && input.files[0]) {{
+        return URL.createObjectURL(input.files[0]);
+      }}
+      const remove = uploadBox.querySelector('input[name="remove_image"]');
+      if (remove && remove.checked) return "";
+      return uploadBox.dataset.currentUrl || "";
+    }}
+    function updateAdFormPreview(form) {{
+      const preview = form.querySelector(".ad-form-preview");
+      if (!preview) return;
+      const groupSelect = form.querySelector('select[name="group_id"]');
+      const textarea = form.querySelector(".rich-textarea");
+      const start = form.querySelector('input[name="start_at"]');
+      const end = form.querySelector('input[name="end_at"]');
+      const interval = form.querySelector('input[name="interval_minutes"]');
+      const uploadBox = form.querySelector(".upload-box");
+      const groupName = groupSelect && groupSelect.selectedOptions.length ? groupSelect.selectedOptions[0].textContent.trim() : "Выберите группу";
+      const startText = start && start.value ? formatDtInput(start.value) : "не задан";
+      const endText = end && end.value ? formatDtInput(end.value) : "не задано";
+      const intervalText = intervalLabel(interval ? interval.value : "");
+      const groupNode = preview.querySelector(".tg-group-name");
+      const timeNode = preview.querySelector(".tg-time-line");
+      const textNode = preview.querySelector(".tg-preview-text");
+      const imageNode = preview.querySelector(".tg-preview-image");
+      if (groupNode) groupNode.textContent = groupName;
+      if (timeNode) timeNode.textContent = "Старт: " + startText + " • До: " + endText + " • " + intervalText;
+      if (textNode) textNode.innerHTML = telegramPreview(textarea ? textarea.value : "");
+      const imageSrc = getImagePreviewSource(uploadBox);
+      if (imageNode) {{
+        if (imageSrc) {{
+          imageNode.src = imageSrc;
+          imageNode.style.display = "block";
+        }} else {{
+          imageNode.removeAttribute("src");
+          imageNode.style.display = "none";
+        }}
+      }}
+    }}
     function wrapSelection(textarea, before, after) {{
       const start = textarea.selectionStart || 0;
       const end = textarea.selectionEnd || 0;
@@ -356,6 +468,8 @@ def page(title, body, session=None):
       document.querySelectorAll(".rich-textarea").forEach((textarea) => {{
         textarea.addEventListener("input", () => updatePreview(textarea));
         updatePreview(textarea);
+        const form = textarea.closest("form");
+        if (form) textarea.addEventListener("input", () => updateAdFormPreview(form));
       }});
       document.querySelectorAll(".toolbar button").forEach((button) => {{
         button.addEventListener("click", () => {{
@@ -385,11 +499,40 @@ def page(title, body, session=None):
           const file = input.files && input.files[0];
           if (!preview || !file) {{
             if (preview) preview.style.display = "none";
+            const form = input.closest("form");
+            if (form) updateAdFormPreview(form);
             return;
           }}
           preview.src = URL.createObjectURL(file);
           preview.style.display = "block";
+          const form = input.closest("form");
+          if (form) updateAdFormPreview(form);
         }});
+      }});
+      document.querySelectorAll('input[name="remove_image"]').forEach((checkbox) => {{
+        checkbox.addEventListener("change", () => {{
+          const form = checkbox.closest("form");
+          if (form) updateAdFormPreview(form);
+        }});
+      }});
+      document.querySelectorAll("[data-interval-value]").forEach((button) => {{
+        button.addEventListener("click", () => {{
+          const form = button.closest("form");
+          if (!form) return;
+          const input = form.querySelector('input[name="interval_minutes"]');
+          if (!input) return;
+          input.value = button.dataset.intervalValue;
+          form.querySelectorAll("[data-interval-value]").forEach((other) => other.classList.remove("active"));
+          button.classList.add("active");
+          updateAdFormPreview(form);
+        }});
+      }});
+      document.querySelectorAll('form[action="/cabinet/ads/new"], form[action$="/edit"]').forEach((form) => {{
+        form.querySelectorAll('select[name="group_id"], input[name="start_at"], input[name="end_at"], input[name="interval_minutes"]').forEach((field) => {{
+          field.addEventListener("input", () => updateAdFormPreview(form));
+          field.addEventListener("change", () => updateAdFormPreview(form));
+        }});
+        updateAdFormPreview(form);
       }});
     }});
   </script>
@@ -790,6 +933,9 @@ async def new_ad_get(request: Request):
     with db() as conn:
         groups = conn.execute("SELECT * FROM groups WHERE tenant_id = ? ORDER BY title", (tenant["id"],)).fetchall()
     options = "".join(f'<option value="{g["id"]}">{esc(g["title"])}</option>' for g in groups)
+    first_group = groups[0]["title"] if groups else ""
+    start_value = dt_input(minutes=10)
+    end_value = dt_input(minutes=60 * 24)
     empty = "<p class='bad'>Сначала подключите группу через Telegram командой /register_group.</p>" if not groups else ""
     return page(
         "Создать объявление",
@@ -803,10 +949,12 @@ async def new_ad_get(request: Request):
             {image_upload_block()}
             {rich_editor("text")}
             <div class="form-grid">
-              <div><label>Старт</label><input type="datetime-local" name="start_at" value="{dt_input(minutes=10)}" required></div>
-              <div><label>Окончание</label><input type="datetime-local" name="end_at" value="{dt_input(minutes=60*24)}" required></div>
+              <div><label>Старт</label><input type="datetime-local" name="start_at" value="{start_value}" required></div>
+              <div><label>Окончание</label><input type="datetime-local" name="end_at" value="{end_value}" required></div>
               <div><label>Интервал, минут</label><input type="number" name="interval_minutes" value="240" min="1" required></div>
             </div>
+            {interval_presets_block("240")}
+            {ad_form_preview_block(first_group, start_value, end_value, "240")}
             <p class="muted">Пока сайт создаёт текстовые объявления. Фото, видео и альбомы временно удобнее добавлять через Telegram.</p>
             <p><button type="submit">Запланировать</button> <a class="btn ghost" href="/cabinet/ads">Отмена</a></p>
           </form>
@@ -876,6 +1024,7 @@ async def edit_ad_get(request: Request, ad_id: int):
         f'<option value="{g["id"]}" {"selected" if g["id"] == ad["group_id"] else ""}>{esc(g["title"])}</option>'
         for g in groups
     )
+    selected_group = next((g["title"] for g in groups if g["id"] == ad["group_id"]), "")
     content = (ad["text_html"] or ad["text"]) if ad["media_type"] == "text" else (ad["caption_html"] or ad["caption"])
     active_checked = "checked" if ad["active"] else ""
     media_note = (
@@ -898,6 +1047,8 @@ async def edit_ad_get(request: Request, ad_id: int):
               <div><label>Окончание</label><input type="datetime-local" name="end_at" value="{dt_input(ad['end_at'])}" required></div>
               <div><label>Интервал, минут</label><input type="number" name="interval_minutes" value="{ad['interval_minutes']}" min="1" required></div>
             </div>
+            {interval_presets_block(ad["interval_minutes"])}
+            {ad_form_preview_block(selected_group, dt_input(ad['start_at']), dt_input(ad['end_at']), ad["interval_minutes"], local_upload_url(ad["file_id"]))}
             <label><input type="checkbox" name="active" value="1" {active_checked} style="width:auto"> Объявление активно</label>
             {media_note}
             <p>
