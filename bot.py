@@ -199,6 +199,13 @@ def tenant_menu():
     )
 
 
+def super_tenant_menu():
+    return ReplyKeyboardMarkup(
+        tenant_menu().keyboard + [[KeyboardButton("⬅️ Меню владельца")]],
+        resize_keyboard=True,
+    )
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id == SUPER_ADMIN_ID:
@@ -301,10 +308,15 @@ async def handle_super(update, context, text):
     tenant_buttons = {"📢 Мои группы", "➕ Группа", "📝 Мои объявления", "➕ Объявление", "📊 Статистика"}
     tenant_steps = {"add_group", "ad_media", "ad_album_collect", "ad_edit_text", "ad_start", "ad_end", "ad_interval"}
 
+    if text == "⬅️ Меню владельца":
+        context.user_data.clear()
+        await update.message.reply_text("👑 Меню владельца бота", reply_markup=super_menu())
+        return
+
     if text in {"🧪 Мой кабинет", "📣 Рекламный кабинет"}:
         ensure_super_tenant()
         context.user_data.clear()
-        await update.message.reply_text("📣 Рекламный кабинет: группы, объявления и расписание публикаций", reply_markup=tenant_menu())
+        await update.message.reply_text("📣 Рекламный кабинет: группы, объявления и расписание публикаций", reply_markup=super_tenant_menu())
         return
 
     if text in tenant_buttons or step in tenant_steps:
@@ -346,13 +358,16 @@ async def handle_super(update, context, text):
             return
         for tenant in tenants:
             mark = "✅" if tenant_has_access(tenant) else "⛔"
+            toggle_label = "🔴 Отключить" if tenant["is_active"] else "🟢 Активировать"
+            toggle_cb = f"tenant_disable_{tenant['id']}" if tenant["is_active"] else f"tenant_enable_{tenant['id']}"
             keyboard = InlineKeyboardMarkup(
                 [
                     [
                         InlineKeyboardButton("+10 дней", callback_data=f"tenant_extend_{tenant['id']}_10"),
                         InlineKeyboardButton("+30 дней", callback_data=f"tenant_extend_{tenant['id']}_30"),
+                        InlineKeyboardButton("+90 дней", callback_data=f"tenant_extend_{tenant['id']}_90"),
                     ],
-                    [InlineKeyboardButton("Отключить", callback_data=f"tenant_disable_{tenant['id']}")],
+                    [InlineKeyboardButton(toggle_label, callback_data=toggle_cb)],
                 ]
             )
             await update.message.reply_text(
@@ -1151,6 +1166,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 conn.execute("UPDATE tenants SET is_active = 0 WHERE id = ?", (tenant_id,))
             reschedule_all(context.application)
             await reply_to_callback(q, "⛔ Арендатор отключен.")
+        elif data.startswith("tenant_enable_"):
+            tenant_id = int(data.split("_")[2])
+            with db() as conn:
+                conn.execute("UPDATE tenants SET is_active = 1 WHERE id = ?", (tenant_id,))
+            reschedule_all(context.application)
+            await reply_to_callback(q, "✅ Арендатор активирован.")
         return
 
     tenant = tenant_by_user(user_id)
