@@ -21,6 +21,8 @@ SUPER_ADMIN_ID = int(os.getenv("SUPER_ADMIN_ID", "0"))
 DATABASE_PATH = os.getenv("DATABASE_PATH", "bot.sqlite3")
 TIMEZONE = ZoneInfo(os.getenv("TIMEZONE", "Europe/Istanbul"))
 BOT_USERNAME = os.getenv("BOT_USERNAME", "carservise_bot")
+OWNER_CONTACT_URL = os.getenv("OWNER_CONTACT_URL", f"https://t.me/{BOT_USERNAME}")
+RENT_BOT_URL = os.getenv("RENT_BOT_URL", OWNER_CONTACT_URL)
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN не задан. Создай .env по примеру .env.example")
@@ -211,6 +213,29 @@ def super_tenant_menu():
     )
 
 
+def no_access_keyboard():
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("💳 Арендовать такого бота", url=RENT_BOT_URL)],
+            [InlineKeyboardButton("📞 Связаться с владельцем", url=OWNER_CONTACT_URL)],
+        ]
+    )
+
+
+def add_bot_to_group_keyboard():
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "➕ Добавить бота в группу/канал",
+                    url=f"https://t.me/{BOT_USERNAME}?startgroup=connect",
+                )
+            ],
+            [InlineKeyboardButton("Открыть личный кабинет", url=f"https://t.me/{BOT_USERNAME}")],
+        ]
+    )
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id == SUPER_ADMIN_ID:
@@ -220,14 +245,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if tenant_has_access(tenant):
         await update.message.reply_text(f"✅ Доступ активен до {fmt(tenant['access_until'])}", reply_markup=tenant_menu())
     elif tenant:
-        await update.message.reply_text("⛔ Доступ закончился. Настройки сохранены, публикации остановлены.")
+        await update.message.reply_text(
+            "⛔ Доступ закончился. Настройки сохранены, публикации остановлены.\n\n"
+            "Продлите аренду, чтобы снова включить автопостинг.",
+            reply_markup=no_access_keyboard(),
+        )
     else:
         await update.message.reply_text(
             "У вас пока нет доступа к кабинету.\n\n"
             "Отправьте владельцу бота этот ID:\n"
             f"<code>{user_id}</code>\n\n"
-            "После включения доступа вернитесь сюда и нажмите /start.",
+            "Или нажмите кнопку ниже, чтобы арендовать такого же бота для своей группы.",
             parse_mode=ParseMode.HTML,
+            reply_markup=no_access_keyboard(),
         )
 
 
@@ -301,8 +331,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "У вас пока нет активного доступа к кабинету.\n\n"
             "Отправьте владельцу бота этот ID:\n"
             f"<code>{user_id}</code>\n\n"
-            "После включения доступа нажмите /start.",
+            "Или нажмите кнопку ниже, чтобы арендовать такого же бота для своей группы.",
             parse_mode=ParseMode.HTML,
+            reply_markup=no_access_keyboard(),
         )
         return
     await handle_tenant(update, context, tenant, text)
@@ -396,13 +427,16 @@ async def handle_tenant(update, context, tenant, text):
     if text == "➕ Группа":
         context.user_data["step"] = "add_group"
         await update.message.reply_text(
-            "Самый простой способ:\n"
-            "1. Добавьте этого бота админом в нужную группу.\n"
-            "2. В группе напишите команду <code>/register_group</code>.\n"
-            "3. Вернитесь сюда и нажмите «Мои группы».\n\n"
-            "Запасной ручной способ: введите ID и название:\n"
+            "Подключение группы без ручного ID:\n\n"
+            "1. Нажмите кнопку «Добавить бота в группу/канал».\n"
+            "2. Выберите нужную группу или канал.\n"
+            "3. Назначьте бота администратором с правом публиковать сообщения.\n"
+            "4. В этой группе/канале отправьте команду <code>/register_group</code>.\n"
+            "5. Вернитесь сюда и нажмите «Мои группы».\n\n"
+            "Запасной ручной способ: введите ID и название сообщением сюда:\n"
             "<code>-1001234567890 Моя группа</code>",
             parse_mode=ParseMode.HTML,
+            reply_markup=add_bot_to_group_keyboard(),
         )
         return
     if step == "add_group":
@@ -426,18 +460,27 @@ async def handle_tenant(update, context, tenant, text):
         with db() as conn:
             groups = conn.execute("SELECT * FROM groups WHERE tenant_id = ? ORDER BY id DESC", (tenant["id"],)).fetchall()
         if not groups:
-            await update.message.reply_text("Группы пока не добавлены.")
+            await update.message.reply_text(
+                "Группы пока не добавлены.\n\n"
+                "Нажмите «Добавить бота в группу/канал», выберите группу и затем отправьте там команду /register_group.",
+                reply_markup=add_bot_to_group_keyboard(),
+            )
             return
         await update.message.reply_text(
             "\n".join(f"#{g['id']} | <code>{g['chat_id']}</code> | {g['title']}" for g in groups),
             parse_mode=ParseMode.HTML,
+            reply_markup=add_bot_to_group_keyboard(),
         )
         return
     if text == "➕ Объявление":
         with db() as conn:
             groups = conn.execute("SELECT * FROM groups WHERE tenant_id = ? ORDER BY id DESC", (tenant["id"],)).fetchall()
         if not groups:
-            await update.message.reply_text("Сначала добавьте группу.")
+            await update.message.reply_text(
+                "Сначала подключите группу или канал.\n\n"
+                "После добавления бота администратором отправьте в группе команду /register_group.",
+                reply_markup=add_bot_to_group_keyboard(),
+            )
             return
         if len(groups) == 1:
             context.user_data["step"] = "ad_media"
