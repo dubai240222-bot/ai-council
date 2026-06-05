@@ -227,11 +227,17 @@ def add_bot_to_group_keyboard():
         [
             [
                 InlineKeyboardButton(
-                    "➕ Добавить бота в группу/канал",
+                    "➕ Добавить в группу",
                     url=f"https://t.me/{BOT_USERNAME}?startgroup=connect",
                 )
             ],
-            [InlineKeyboardButton("Открыть личный кабинет", url=f"https://t.me/{BOT_USERNAME}")],
+            [
+                InlineKeyboardButton(
+                    "📣 Добавить в канал",
+                    url=f"https://t.me/{BOT_USERNAME}?startchannel=connect",
+                )
+            ],
+            [InlineKeyboardButton("✅ Проверить мои группы", callback_data="tenant_groups")],
         ]
     )
 
@@ -422,13 +428,30 @@ async def handle_super(update, context, text):
     await update.message.reply_text("Выберите действие в меню.", reply_markup=super_menu())
 
 
+async def send_groups_list(message, tenant):
+    with db() as conn:
+        groups = conn.execute("SELECT * FROM groups WHERE tenant_id = ? ORDER BY id DESC", (tenant["id"],)).fetchall()
+    if not groups:
+        await message.reply_text(
+            "Группы пока не добавлены.\n\n"
+            "Нажмите «Добавить в группу» или «Добавить в канал», затем отправьте там команду /register_group.",
+            reply_markup=add_bot_to_group_keyboard(),
+        )
+        return
+    await message.reply_text(
+        "\n".join(f"#{g['id']} | <code>{g['chat_id']}</code> | {g['title']}" for g in groups),
+        parse_mode=ParseMode.HTML,
+        reply_markup=add_bot_to_group_keyboard(),
+    )
+
+
 async def handle_tenant(update, context, tenant, text):
     step = context.user_data.get("step")
     if text == "➕ Группа":
         context.user_data["step"] = "add_group"
         await update.message.reply_text(
             "Подключение группы без ручного ID:\n\n"
-            "1. Нажмите кнопку «Добавить бота в группу/канал».\n"
+            "1. Нажмите «Добавить в группу» или «Добавить в канал».\n"
             "2. Выберите нужную группу или канал.\n"
             "3. Назначьте бота администратором с правом публиковать сообщения.\n"
             "4. В этой группе/канале отправьте команду <code>/register_group</code>.\n"
@@ -457,20 +480,7 @@ async def handle_tenant(update, context, tenant, text):
             await update.message.reply_text("❌ Пример: -1001234567890 Моя группа")
         return
     if text == "📢 Мои группы":
-        with db() as conn:
-            groups = conn.execute("SELECT * FROM groups WHERE tenant_id = ? ORDER BY id DESC", (tenant["id"],)).fetchall()
-        if not groups:
-            await update.message.reply_text(
-                "Группы пока не добавлены.\n\n"
-                "Нажмите «Добавить бота в группу/канал», выберите группу и затем отправьте там команду /register_group.",
-                reply_markup=add_bot_to_group_keyboard(),
-            )
-            return
-        await update.message.reply_text(
-            "\n".join(f"#{g['id']} | <code>{g['chat_id']}</code> | {g['title']}" for g in groups),
-            parse_mode=ParseMode.HTML,
-            reply_markup=add_bot_to_group_keyboard(),
-        )
+        await send_groups_list(update.message, tenant)
         return
     if text == "➕ Объявление":
         with db() as conn:
@@ -478,7 +488,7 @@ async def handle_tenant(update, context, tenant, text):
         if not groups:
             await update.message.reply_text(
                 "Сначала подключите группу или канал.\n\n"
-                "После добавления бота администратором отправьте в группе команду /register_group.",
+                "Нажмите «Добавить в группу» или «Добавить в канал», затем отправьте там команду /register_group.",
                 reply_markup=add_bot_to_group_keyboard(),
             )
             return
@@ -1257,6 +1267,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = q.data
     user_id = q.from_user.id
     if user_id == SUPER_ADMIN_ID:
+        if data == "tenant_groups":
+            await reply_to_callback(q, "Сейчас покажу подключенные группы.")
+            await send_groups_list(q.message, ensure_super_tenant())
+            return
         if data.startswith("ad_"):
             await handle_tenant_callback(q, context, ensure_super_tenant(), data)
             return
@@ -1286,6 +1300,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tenant = tenant_by_user(user_id)
     if not tenant_has_access(tenant):
         await reply_to_callback(q, "⛔ Доступ не активен.")
+        return
+    if data == "tenant_groups":
+        await reply_to_callback(q, "Сейчас покажу подключенные группы.")
+        await send_groups_list(q.message, tenant)
         return
     if data.startswith("ad_"):
         await handle_tenant_callback(q, context, tenant, data)
