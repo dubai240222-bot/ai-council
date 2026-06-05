@@ -22,6 +22,7 @@ TIMEZONE = ZoneInfo(os.getenv("TIMEZONE", "Europe/Istanbul"))
 WEB_SECRET = os.getenv("WEB_SECRET") or os.getenv("BOT_TOKEN") or "change-me"
 WEB_OWNER_LOGIN = os.getenv("WEB_OWNER_LOGIN", "owner")
 WEB_OWNER_PASSWORD = os.getenv("WEB_OWNER_PASSWORD", "")
+SUPER_ADMIN_ID = int(os.getenv("SUPER_ADMIN_ID", "0"))
 SESSION_COOKIE = "reklama_admin_session"
 
 app = FastAPI(title="Reklama Bot Admin")
@@ -297,10 +298,25 @@ async def owner_dashboard(request: Request):
         tenants = conn.execute("SELECT * FROM tenants ORDER BY id DESC").fetchall()
         total_ads = conn.execute("SELECT COUNT(*) FROM ads").fetchone()[0]
         total_posts = conn.execute("SELECT COALESCE(SUM(published_count), 0) FROM ads").fetchone()[0]
+        owner_tenant = conn.execute("SELECT * FROM tenants WHERE telegram_user_id = ?", (SUPER_ADMIN_ID,)).fetchone()
     rows = []
+    cabinet_cards = []
     for tenant in tenants:
         state = '<span class="ok">активен</span>' if tenant_has_access(tenant) else '<span class="bad">нет доступа</span>'
         toggle_text = "Отключить" if tenant["is_active"] else "Активировать"
+        if owner_tenant and tenant["id"] == owner_tenant["id"]:
+            owner_label = "Мой рекламный кабинет"
+        else:
+            owner_label = f"Кабинет: {esc(tenant['name'])}"
+        cabinet_cards.append(
+            f"""
+            <div class="card">
+              <h2>{owner_label}</h2>
+              <p class="muted">Группы, объявления, создание, редактирование и отчёты.</p>
+              <a class="btn" href="/owner/tenant/{tenant['id']}">Открыть управление рекламой</a>
+            </div>
+            """
+        )
         rows.append(
             f"""
             <tr>
@@ -337,6 +353,13 @@ async def owner_dashboard(request: Request):
           <div class="card"><h2>Арендаторы</h2><strong>{len(tenants)}</strong></div>
           <div class="card"><h2>Объявления</h2><strong>{total_ads}</strong></div>
           <div class="card"><h2>Публикации</h2><strong>{total_posts}</strong></div>
+        </div>
+        <div class="card">
+          <h2>Управление рекламой</h2>
+          <p class="muted">Владелец может открыть свой рекламный кабинет или зайти в кабинет любого арендатора как суперадмин.</p>
+        </div>
+        <div class="grid">
+          {''.join(cabinet_cards) or '<div class="card">Кабинетов пока нет.</div>'}
         </div>
         <div class="card">
           <h2>Арендаторы и веб-доступ</h2>
