@@ -7,6 +7,7 @@ import os
 import re
 import secrets
 import sqlite3
+import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import parse_qs
@@ -15,6 +16,7 @@ from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 load_dotenv()
 
@@ -25,8 +27,14 @@ WEB_OWNER_LOGIN = os.getenv("WEB_OWNER_LOGIN", "owner")
 WEB_OWNER_PASSWORD = os.getenv("WEB_OWNER_PASSWORD", "")
 SUPER_ADMIN_ID = int(os.getenv("SUPER_ADMIN_ID", "0"))
 SESSION_COOKIE = "reklama_admin_session"
+BASE_DIR = Path(__file__).resolve().parent
+UPLOAD_DIR_RAW = Path(os.getenv("UPLOAD_DIR", "uploads"))
+UPLOAD_DIR = UPLOAD_DIR_RAW if UPLOAD_DIR_RAW.is_absolute() else BASE_DIR / UPLOAD_DIR_RAW
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 
 app = FastAPI(title="Reklama Bot Admin")
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 
 def db():
@@ -137,6 +145,63 @@ def plain_text(value):
     return html.unescape(value).strip()
 
 
+async def save_uploaded_image(tenant_id, upload):
+    if not upload or not getattr(upload, "filename", ""):
+        return None
+    content_type = (getattr(upload, "content_type", "") or "").lower()
+    if not content_type.startswith("image/"):
+        return None
+    ext = Path(upload.filename).suffix.lower()
+    if ext not in {".jpg", ".jpeg", ".png", ".webp"}:
+        ext = ".jpg"
+    data = await upload.read()
+    if not data or len(data) > MAX_UPLOAD_BYTES:
+        return None
+    tenant_dir = UPLOAD_DIR / f"tenant_{tenant_id}"
+    tenant_dir.mkdir(parents=True, exist_ok=True)
+    path = tenant_dir / f"{uuid.uuid4().hex}{ext}"
+    path.write_bytes(data)
+    return path.relative_to(BASE_DIR).as_posix()
+
+
+def local_upload_url(file_id):
+    if not file_id:
+        return ""
+    normalized = str(file_id).replace("\\", "/")
+    if normalized.startswith("uploads/"):
+        return "/" + normalized
+    return ""
+
+
+def image_upload_block(current_file_id=""):
+    current_url = local_upload_url(current_file_id)
+    current = (
+        f"""
+        <div class="current-image">
+          <div class="preview-title">Текущее фото</div>
+          <img src="{esc(current_url)}" alt="Текущее фото">
+          <label><input type="checkbox" name="remove_image" value="1" style="width:auto"> Убрать фото и оставить только текст</label>
+        </div>
+        """
+        if current_url
+        else ""
+    )
+    return f"""
+      <label>Фото к рекламе</label>
+      <div class="upload-box">
+        <input type="file" name="image" accept="image/png,image/jpeg,image/webp" class="image-input">
+        <p class="muted">Можно добавить JPG, PNG или WebP до 10 MB. Альбомы 2-10 фото добавим следующим шагом.</p>
+        {current}
+        <img class="image-preview" alt="Предпросмотр фото">
+      </div>
+    """
+
+
+def ad_thumbnail(ad):
+    url = local_upload_url(ad["file_id"] if "file_id" in ad.keys() else "")
+    return f'<img class="ad-thumb" src="{esc(url)}" alt="Фото объявления">' if url else ""
+
+
 def rich_editor(name, value="", label="Текст объявления", placeholder="Введите рекламный текст..."):
     field_id = f"editor_{name}"
     return f"""
@@ -238,6 +303,10 @@ def page(title, body, session=None):
     .telegram-preview {{ min-height:80px; white-space:pre-wrap; background:#e9f7df; border:1px solid #bfdab2; border-radius:8px; padding:12px; line-height:1.35; }}
     .telegram-preview a {{ color:#2563eb; }}
     .telegram-spoiler {{ background:#111827; color:#111827; border-radius:3px; padding:0 3px; }}
+    .upload-box {{ border:1px solid var(--line); border-radius:8px; background:#fbfdff; padding:10px; }}
+    .image-preview, .current-image img {{ display:none; max-width:360px; width:100%; max-height:260px; object-fit:contain; margin-top:10px; border:1px solid var(--line); border-radius:8px; background:white; }}
+    .current-image img {{ display:block; }}
+    .ad-thumb {{ display:block; width:92px; height:70px; object-fit:cover; border-radius:6px; border:1px solid var(--line); margin-bottom:6px; }}
     @media (max-width:720px) {{ header {{ padding:12px 14px; }} table {{ font-size:14px; }} th, td {{ padding:8px; }} }}
   </style>
   <script>
@@ -308,6 +377,18 @@ def page(title, body, session=None):
             return;
           }}
           wrapSelection(textarea, button.dataset.before || "", button.dataset.after || "");
+        }});
+      }});
+      document.querySelectorAll(".image-input").forEach((input) => {{
+        input.addEventListener("change", () => {{
+          const preview = input.closest(".upload-box").querySelector(".image-preview");
+          const file = input.files && input.files[0];
+          if (!preview || !file) {{
+            if (preview) preview.style.display = "none";
+            return;
+          }}
+          preview.src = URL.createObjectURL(file);
+          preview.style.display = "block";
         }});
       }});
     }});
@@ -619,7 +700,7 @@ async def tenant_dashboard(request: Request):
         </div>
         <div class="card">
           <h2>Следующая активная реклама</h2>
-          {f"<p><span class='pill'>#{next_ad['id']}</span> {esc(next_ad['group_title'])}</p><div class='preview'>{esc(next_ad['text'] or next_ad['caption'] or '[' + next_ad['media_type'] + ']')[:500]}</div>" if next_ad else "<p class='muted'>Активных объявлений пока нет.</p>"}
+          {f"<p><span class='pill'>#{next_ad['id']}</span> {esc(next_ad['group_title'])}</p>{ad_thumbnail(next_ad)}<div class='preview'>{esc(next_ad['text'] or next_ad['caption'] or '[' + next_ad['media_type'] + ']')[:500]}</div>" if next_ad else "<p class='muted'>Активных объявлений пока нет.</p>"}
         </div>
         """,
         session=session,
@@ -674,7 +755,7 @@ async def cabinet_ads(request: Request):
               <td>{esc(ad['group_title'])}</td>
               <td>{fmt(ad['start_at'])}<br>{fmt(ad['end_at'])}</td>
               <td>{ad['interval_minutes']} мин<br>{ad['published_count']} постов</td>
-              <td>{preview[:260]}</td>
+              <td>{ad_thumbnail(ad)}{preview[:260]}</td>
               <td>
                 <a class="btn ghost" href="/cabinet/ads/{ad['id']}/edit">Редактировать</a>
                 <form class="inline" method="post" action="/cabinet/ads/toggle">
@@ -716,9 +797,10 @@ async def new_ad_get(request: Request):
         <h1>Создать объявление</h1>
         <div class="card">
           {empty}
-          <form method="post" action="/cabinet/ads/new">
+          <form method="post" action="/cabinet/ads/new" enctype="multipart/form-data">
             <label>Группа или канал</label>
             <select name="group_id" required>{options}</select>
+            {image_upload_block()}
             {rich_editor("text")}
             <div class="form-grid">
               <div><label>Старт</label><input type="datetime-local" name="start_at" value="{dt_input(minutes=10)}" required></div>
@@ -739,10 +821,11 @@ async def new_ad_post(request: Request):
     tenant, session, response = tenant_guard(request)
     if response:
         return response
-    data = await form_data(request)
+    data = await request.form()
     group_id = int(data["group_id"])
     text_html = data.get("text", "").strip()
     text = plain_text(text_html)
+    image_path = await save_uploaded_image(tenant["id"], data.get("image"))
     start_at = parse_dt_input(data["start_at"])
     end_at = parse_dt_input(data["end_at"])
     interval = int(data["interval_minutes"])
@@ -755,16 +838,20 @@ async def new_ad_post(request: Request):
         conn.execute(
             """
             INSERT INTO ads (
-                tenant_id, group_id, media_type, text, text_html,
+                tenant_id, group_id, media_type, file_id, text, caption, text_html, caption_html,
                 start_at, end_at, interval_minutes, active, created_at, updated_at
             )
-            VALUES (?, ?, 'text', ?, ?, ?, ?, ?, 1, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
             """,
             (
                 tenant["id"],
                 group_id,
-                text,
-                text_html,
+                "photo" if image_path else "text",
+                image_path,
+                None if image_path else text,
+                text if image_path else None,
+                None if image_path else text_html,
+                text_html if image_path else None,
                 start_at.isoformat(),
                 end_at.isoformat(),
                 interval,
@@ -801,9 +888,10 @@ async def edit_ad_get(request: Request, ad_id: int):
         f"""
         <h1>Редактировать объявление #{ad_id}</h1>
         <div class="card">
-          <form method="post" action="/cabinet/ads/{ad_id}/edit">
+          <form method="post" action="/cabinet/ads/{ad_id}/edit" enctype="multipart/form-data">
             <label>Группа или канал</label>
             <select name="group_id" required>{options}</select>
+            {image_upload_block(ad["file_id"])}
             {rich_editor("content", content, "Текст объявления" if ad["media_type"] == "text" else "Подпись к медиа")}
             <div class="form-grid">
               <div><label>Старт</label><input type="datetime-local" name="start_at" value="{dt_input(ad['start_at'])}" required></div>
@@ -829,10 +917,12 @@ async def edit_ad_post(request: Request, ad_id: int):
     tenant, session, response = tenant_guard(request)
     if response:
         return response
-    data = await form_data(request)
+    data = await request.form()
     group_id = int(data["group_id"])
     content_html = data.get("content", "").strip()
     content = plain_text(content_html)
+    image_path = await save_uploaded_image(tenant["id"], data.get("image"))
+    remove_image = data.get("remove_image") == "1"
     start_at = parse_dt_input(data["start_at"])
     end_at = parse_dt_input(data["end_at"])
     interval = int(data["interval_minutes"])
@@ -844,7 +934,52 @@ async def edit_ad_post(request: Request, ad_id: int):
         group = conn.execute("SELECT * FROM groups WHERE id = ? AND tenant_id = ?", (group_id, tenant["id"])).fetchone()
         if not ad or not group:
             return redirect("/cabinet/ads")
-        if ad["media_type"] == "text":
+        if image_path:
+            conn.execute(
+                """
+                UPDATE ads
+                SET group_id = ?, media_type = 'photo', file_id = ?, text = NULL, text_html = NULL,
+                    caption = ?, caption_html = ?, start_at = ?, end_at = ?,
+                    interval_minutes = ?, active = ?, updated_at = ?
+                WHERE id = ? AND tenant_id = ?
+                """,
+                (
+                    group_id,
+                    image_path,
+                    content,
+                    content_html,
+                    start_at.isoformat(),
+                    end_at.isoformat(),
+                    interval,
+                    active,
+                    now_dt().isoformat(),
+                    ad_id,
+                    tenant["id"],
+                ),
+            )
+        elif remove_image and ad["media_type"] == "photo" and local_upload_url(ad["file_id"]):
+            conn.execute(
+                """
+                UPDATE ads
+                SET group_id = ?, media_type = 'text', file_id = NULL, caption = NULL, caption_html = NULL,
+                    text = ?, text_html = ?, start_at = ?, end_at = ?,
+                    interval_minutes = ?, active = ?, updated_at = ?
+                WHERE id = ? AND tenant_id = ?
+                """,
+                (
+                    group_id,
+                    content,
+                    content_html,
+                    start_at.isoformat(),
+                    end_at.isoformat(),
+                    interval,
+                    active,
+                    now_dt().isoformat(),
+                    ad_id,
+                    tenant["id"],
+                ),
+            )
+        elif ad["media_type"] == "text":
             conn.execute(
                 """
                 UPDATE ads

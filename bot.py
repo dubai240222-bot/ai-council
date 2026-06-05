@@ -24,6 +24,7 @@ BOT_USERNAME = os.getenv("BOT_USERNAME", "carservise_bot")
 OWNER_CONTACT_URL = os.getenv("OWNER_CONTACT_URL", f"https://t.me/{BOT_USERNAME}")
 RENT_BOT_URL = os.getenv("RENT_BOT_URL", OWNER_CONTACT_URL)
 WEB_CABINET_URL = os.getenv("WEB_CABINET_URL", "http://45.93.137.72:8000/login")
+BASE_DIR = Path(__file__).resolve().parent
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN не задан. Создай .env по примеру .env.example")
@@ -44,6 +45,16 @@ def parse_dt(value):
 
 def fmt(value):
     return datetime.fromisoformat(value).astimezone(TIMEZONE).strftime("%d.%m.%Y %H:%M") if value else "-"
+
+
+def media_input(file_id):
+    if not file_id:
+        return file_id
+    value = str(file_id)
+    path = Path(value)
+    if not path.is_absolute():
+        path = BASE_DIR / value
+    return path if path.exists() else file_id
 
 
 MONTH_NAMES = [
@@ -685,7 +696,12 @@ async def send_ad_preview(update, context):
     if ad["media_type"] == "text":
         await context.bot.send_message(chat_id, ad.get("text_html") or ad["text"], parse_mode=ParseMode.HTML)
     elif ad["media_type"] == "photo":
-        await context.bot.send_photo(chat_id, ad["file_id"], caption=ad.get("caption_html") or ad.get("caption"), parse_mode=ParseMode.HTML)
+        photo = media_input(ad["file_id"])
+        if isinstance(photo, Path):
+            with photo.open("rb") as file:
+                await context.bot.send_photo(chat_id, file, caption=ad.get("caption_html") or ad.get("caption"), parse_mode=ParseMode.HTML)
+        else:
+            await context.bot.send_photo(chat_id, photo, caption=ad.get("caption_html") or ad.get("caption"), parse_mode=ParseMode.HTML)
     elif ad["media_type"] == "video":
         await context.bot.send_video(chat_id, ad["file_id"], caption=ad.get("caption_html") or ad.get("caption"), parse_mode=ParseMode.HTML)
     elif ad["media_type"] == "animation":
@@ -946,7 +962,12 @@ async def send_ad_card(message, ad):
     text = ad_preview_text(ad)
     try:
         if ad["media_type"] == "photo":
-            await message.reply_photo(ad["file_id"], caption=text, reply_markup=keyboard)
+            photo = media_input(ad["file_id"])
+            if isinstance(photo, Path):
+                with photo.open("rb") as file:
+                    await message.reply_photo(file, caption=text, reply_markup=keyboard)
+            else:
+                await message.reply_photo(photo, caption=text, reply_markup=keyboard)
         elif ad["media_type"] == "album":
             files = json.loads(ad["file_id"])
             await message.reply_photo(files[0], caption=text, reply_markup=keyboard)
@@ -1474,7 +1495,12 @@ async def send_ad_content(bot, ad):
     if ad["media_type"] == "text":
         await bot.send_message(ad["chat_id"], ad["text_html"] or ad["text"], parse_mode=ParseMode.HTML, **timeout_kwargs)
     elif ad["media_type"] == "photo":
-        await bot.send_photo(ad["chat_id"], ad["file_id"], caption=ad["caption_html"] or ad["caption"], parse_mode=ParseMode.HTML, **timeout_kwargs)
+        photo = media_input(ad["file_id"])
+        if isinstance(photo, Path):
+            with photo.open("rb") as file:
+                await bot.send_photo(ad["chat_id"], file, caption=ad["caption_html"] or ad["caption"], parse_mode=ParseMode.HTML, **timeout_kwargs)
+        else:
+            await bot.send_photo(ad["chat_id"], photo, caption=ad["caption_html"] or ad["caption"], parse_mode=ParseMode.HTML, **timeout_kwargs)
     elif ad["media_type"] == "video":
         await bot.send_video(ad["chat_id"], ad["file_id"], caption=ad["caption_html"] or ad["caption"], parse_mode=ParseMode.HTML, **timeout_kwargs)
     elif ad["media_type"] == "animation":
