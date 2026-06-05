@@ -213,6 +213,11 @@ def super_tenant_menu():
     )
 
 
+TENANT_MENU_BUTTONS = {"📢 Мои группы", "➕ Группа", "📝 Мои объявления", "➕ Объявление", "📊 Статистика"}
+TENANT_FLOW_STEPS = {"add_group", "ad_media", "ad_album_collect", "ad_edit_text", "ad_start", "ad_end", "ad_interval"}
+SUPER_MENU_BUTTONS = {"👤 Арендаторы", "➕ Арендатор", "📣 Рекламный кабинет", "📊 Общая статистика"}
+
+
 def no_access_keyboard():
     return InlineKeyboardMarkup(
         [
@@ -347,8 +352,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_super(update, context, text):
     step = context.user_data.get("step")
-    tenant_buttons = {"📢 Мои группы", "➕ Группа", "📝 Мои объявления", "➕ Объявление", "📊 Статистика"}
-    tenant_steps = {"add_group", "ad_media", "ad_album_collect", "ad_edit_text", "ad_start", "ad_end", "ad_interval"}
+    if step and text in SUPER_MENU_BUTTONS:
+        context.user_data.clear()
+        step = None
 
     if text == "⬅️ Меню владельца":
         context.user_data.clear()
@@ -361,7 +367,7 @@ async def handle_super(update, context, text):
         await update.message.reply_text("📣 Рекламный кабинет: группы, объявления и расписание публикаций", reply_markup=super_tenant_menu())
         return
 
-    if text in tenant_buttons or step in tenant_steps:
+    if text in TENANT_MENU_BUTTONS or step in TENANT_FLOW_STEPS:
         tenant = ensure_super_tenant()
         await handle_tenant(update, context, tenant, text)
         return
@@ -450,6 +456,10 @@ async def send_groups_list(message, tenant):
 
 async def handle_tenant(update, context, tenant, text):
     step = context.user_data.get("step")
+    if step and text in TENANT_MENU_BUTTONS:
+        context.user_data.clear()
+        step = None
+
     if text == "➕ Группа":
         context.user_data["step"] = "add_group"
         await update.message.reply_text(
