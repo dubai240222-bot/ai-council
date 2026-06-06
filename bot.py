@@ -296,7 +296,6 @@ def tenant_menu():
             [KeyboardButton("📢 Мои группы"), KeyboardButton("➕ Группа")],
             [KeyboardButton("📝 Мои объявления"), KeyboardButton("➕ Объявление")],
             [KeyboardButton("📊 Статистика")],
-            [KeyboardButton("🌐 Веб-кабинет")],
         ],
         resize_keyboard=True,
     )
@@ -308,14 +307,13 @@ def super_tenant_menu():
             [KeyboardButton("📢 Мои группы"), KeyboardButton("➕ Группа")],
             [KeyboardButton("📝 Мои объявления"), KeyboardButton("➕ Объявление")],
             [KeyboardButton("📊 Статистика")],
-            [KeyboardButton("🌐 Веб-кабинет")],
             [KeyboardButton("⬅️ Меню владельца")],
         ],
         resize_keyboard=True,
     )
 
 
-TENANT_MENU_BUTTONS = {"📢 Мои группы", "➕ Группа", "📝 Мои объявления", "➕ Объявление", "📊 Статистика", "🌐 Веб-кабинет"}
+TENANT_MENU_BUTTONS = {"📢 Мои группы", "➕ Группа", "📝 Мои объявления", "➕ Объявление", "📊 Статистика", "🌐 Веб-кабинет", "🌐 Открыть веб-кабинет"}
 TENANT_FLOW_STEPS = {"add_group", "ad_media", "ad_album_collect", "ad_edit_text", "ad_caption_optional", "ad_start", "ad_end", "ad_interval"}
 SUPER_MENU_BUTTONS = {"👤 Арендаторы", "➕ Арендатор", "📣 Рекламный кабинет", "📊 Общая статистика", "🌐 Веб-кабинет"}
 
@@ -390,14 +388,17 @@ def add_bot_to_channel_keyboard(bot_username):
     )
 
 
-async def send_web_cabinet_link(message):
-    await message.reply_text(
+async def send_web_cabinet_link(message, include_button=True):
+    text = (
         "🌐 Веб-кабинет на сайте\n\n"
         "Там удобнее делать сложные действия: создавать и редактировать рекламу, выбирать группы, "
         "настраивать расписание, смотреть отчёты и остаток доступа.\n\n"
-        "В Telegram оставляем быстрые команды: группы, список объявлений, запуск/пауза и уведомления.",
-        reply_markup=web_cabinet_keyboard(),
+        "В Telegram оставляем быстрые команды: группы, список объявлений, запуск/пауза и уведомления."
     )
+    if include_button:
+        await message.reply_text(text, reply_markup=web_cabinet_keyboard())
+    else:
+        await message.reply_text(f"{text}\n\nСсылка: {WEB_CABINET_URL}")
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -541,7 +542,7 @@ async def handle_super(update, context, text):
         return
 
     if text == "🌐 Веб-кабинет":
-        await send_web_cabinet_link(update.message)
+        await send_web_cabinet_link(update.message, include_button=False)
         return
 
     if text in TENANT_MENU_BUTTONS or step in TENANT_FLOW_STEPS:
@@ -1568,7 +1569,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "⚠️ После входа обязательно смените пароль \n"
             "в разделе Настройки!\n\n"
             f"📅 Доступ действует до: {fmt(trial['access_until'])}",
-            reply_markup=no_access_keyboard(tenant_by_user(user_id)),
+            reply_markup=tenant_menu(),
         )
         username_text = f"@{trial['username']}" if trial.get("username") else "нет"
         try:
