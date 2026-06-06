@@ -76,6 +76,8 @@ def init_web_db():
             conn.execute("ALTER TABLE tenants ADD COLUMN web_login TEXT")
         if "web_password_hash" not in tenant_columns:
             conn.execute("ALTER TABLE tenants ADD COLUMN web_password_hash TEXT")
+        if "trial_used" not in tenant_columns:
+            conn.execute("ALTER TABLE tenants ADD COLUMN trial_used INTEGER NOT NULL DEFAULT 0")
         ad_columns = {row["name"] for row in conn.execute("PRAGMA table_info(ads)").fetchall()}
         if "updated_at" not in ad_columns:
             conn.execute("ALTER TABLE ads ADD COLUMN updated_at TEXT")

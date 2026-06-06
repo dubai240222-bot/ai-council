@@ -1,9 +1,12 @@
 ﻿import json
 import logging
 import os
+import re
+import secrets
 import sqlite3
 from calendar import monthrange
 from datetime import datetime, timedelta
+from hashlib import pbkdf2_hmac
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -153,6 +156,12 @@ def init_db():
         tenant_columns = {row["name"] for row in conn.execute("PRAGMA table_info(tenants)").fetchall()}
         if "deleted_at" not in tenant_columns:
             conn.execute("ALTER TABLE tenants ADD COLUMN deleted_at TEXT")
+        if "web_login" not in tenant_columns:
+            conn.execute("ALTER TABLE tenants ADD COLUMN web_login TEXT")
+        if "web_password_hash" not in tenant_columns:
+            conn.execute("ALTER TABLE tenants ADD COLUMN web_password_hash TEXT")
+        if "trial_used" not in tenant_columns:
+            conn.execute("ALTER TABLE tenants ADD COLUMN trial_used INTEGER NOT NULL DEFAULT 0")
 
         log_columns = {row["name"] for row in conn.execute("PRAGMA table_info(publish_logs)").fetchall()}
         if "scheduled_time" not in log_columns:
@@ -164,6 +173,7 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_ads_tenant_group ON ads(tenant_id, group_id);
             CREATE INDEX IF NOT EXISTS idx_groups_tenant ON groups(tenant_id);
             CREATE INDEX IF NOT EXISTS idx_publish_logs_ad_id ON publish_logs(ad_id);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_tenants_web_login ON tenants(web_login) WHERE web_login IS NOT NULL;
             CREATE UNIQUE INDEX IF NOT EXISTS idx_publish_logs_ad_scheduled
                 ON publish_logs(ad_id, scheduled_time)
                 WHERE scheduled_time IS NOT NULL;
@@ -194,6 +204,79 @@ def ensure_super_tenant():
 
 def tenant_has_access(tenant):
     return bool(tenant and tenant["is_active"] and datetime.fromisoformat(tenant["access_until"]) >= now_dt())
+
+
+def trial_available(tenant):
+    return not tenant or not int(tenant["trial_used"] or 0)
+
+
+def hash_password(password):
+    salt = secrets.token_hex(16)
+    digest = pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 120_000)
+    return f"pbkdf2_sha256${salt}${digest.hex()}"
+
+
+def build_trial_login(user):
+    username = (getattr(user, "username", "") or "").strip()
+    if username:
+        base = f"@{username}"
+    else:
+        base = f"user_{str(user.id)[-4:]}"
+        base = re.sub(r"[^A-Za-z0-9_]+", "_", base).strip("_") or f"user_{str(user.id)[-4:]}"
+    login = base
+    suffix = 1
+    with db() as conn:
+        existing = conn.execute(
+            "SELECT id, telegram_user_id FROM tenants WHERE web_login = ?",
+            (login,),
+        ).fetchone()
+        while existing and int(existing["telegram_user_id"]) != int(user.id):
+            suffix += 1
+            login = f"{base}_{suffix}"
+            existing = conn.execute(
+                "SELECT id, telegram_user_id FROM tenants WHERE web_login = ?",
+                (login,),
+            ).fetchone()
+    return login
+
+
+def create_or_activate_trial_tenant(user):
+    tenant = tenant_by_user(user.id)
+    if tenant and int(tenant["trial_used"] or 0):
+        return None, "used"
+    login = build_trial_login(user)
+    access_until = now_dt() + timedelta(days=7)
+    name = (getattr(user, "full_name", "") or getattr(user, "first_name", "") or str(user.id)).strip()
+    password = "4444"
+    password_hash = hash_password(password)
+    with db() as conn:
+        if tenant:
+            conn.execute(
+                """
+                UPDATE tenants
+                SET name = ?, access_until = ?, is_active = 1, web_login = ?, web_password_hash = ?, trial_used = 1
+                WHERE telegram_user_id = ?
+                """,
+                (name, access_until.isoformat(), login, password_hash, user.id),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO tenants (
+                    telegram_user_id, name, access_until, is_active, created_at, web_login, web_password_hash, trial_used
+                )
+                VALUES (?, ?, ?, 1, ?, ?, ?, 1)
+                """,
+                (user.id, name, access_until.isoformat(), now_dt().isoformat(), login, password_hash),
+            )
+    return {
+        "login": login,
+        "password": password,
+        "access_until": access_until.isoformat(),
+        "name": name,
+        "username": getattr(user, "username", None),
+        "telegram_user_id": user.id,
+    }, None
 
 
 def super_menu():
@@ -237,11 +320,13 @@ TENANT_FLOW_STEPS = {"add_group", "ad_media", "ad_album_collect", "ad_edit_text"
 SUPER_MENU_BUTTONS = {"👤 Арендаторы", "➕ Арендатор", "📣 Рекламный кабинет", "📊 Общая статистика", "🌐 Веб-кабинет"}
 
 
-def no_access_keyboard():
+def no_access_keyboard(tenant=None):
     buttons = [
         [InlineKeyboardButton("🔄 Проверить доступ / открыть меню", callback_data="open_main_menu")],
         [InlineKeyboardButton("🌐 Открыть веб-кабинет", url=WEB_CABINET_URL)],
     ]
+    if trial_available(tenant):
+        buttons.append([InlineKeyboardButton("🎁 Попробовать 7 дней бесплатно", callback_data="start_trial")])
     if OWNER_USERNAME:
         owner_url = f"https://t.me/{OWNER_USERNAME}"
         buttons.append([InlineKeyboardButton("💳 Арендовать такого бота", url=owner_url)])
@@ -327,7 +412,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "⛔ Доступ закончился. Настройки сохранены, публикации остановлены.\n\n"
             "Продлите аренду, чтобы снова включить автопостинг.",
-            reply_markup=no_access_keyboard(),
+            reply_markup=no_access_keyboard(tenant),
         )
     else:
         await update.message.reply_text(
@@ -336,7 +421,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"<code>{user_id}</code>\n\n"
             "Или нажмите кнопку ниже, чтобы арендовать такого же бота для своей группы.",
             parse_mode=ParseMode.HTML,
-            reply_markup=no_access_keyboard(),
+            reply_markup=no_access_keyboard(None),
         )
 
 
@@ -347,7 +432,7 @@ async def skip_caption(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not tenant_has_access(tenant):
         await update.message.reply_text(
             "У вас пока нет активного доступа к кабинету.",
-            reply_markup=no_access_keyboard(),
+            reply_markup=no_access_keyboard(tenant),
         )
         return
     if context.user_data.get("step") != "ad_caption_optional" or "new_ad" not in context.user_data:
@@ -404,7 +489,7 @@ async def register_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
             (tenant["id"], chat.id, title, now_dt().isoformat()),
         )
     keyboard = InlineKeyboardMarkup(
-        [[InlineKeyboardButton("Открыть кабинет", url=f"https://t.me/{BOT_USERNAME}")]]
+        [[InlineKeyboardButton("Открыть кабинет", url=WEB_CABINET_URL)]]
     )
     await update.message.reply_text(
         "Группа зарегистрирована.\n\n"
@@ -432,7 +517,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"<code>{user_id}</code>\n\n"
             "Или нажмите кнопку ниже, чтобы арендовать такого же бота для своей группы.",
             parse_mode=ParseMode.HTML,
-            reply_markup=no_access_keyboard(),
+            reply_markup=no_access_keyboard(tenant),
         )
         return
     await handle_tenant(update, context, tenant, text)
@@ -1441,7 +1526,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Если вы уже оплатили доступ, отправьте владельцу бота ваш Telegram ID:\n"
             f"<code>{user_id}</code>",
             parse_mode=ParseMode.HTML,
-            reply_markup=no_access_keyboard(),
+            reply_markup=no_access_keyboard(tenant),
         )
         return
     if data == "rent_owner_fallback":
@@ -1449,7 +1534,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             q,
             "Для аренды напишите владельцу ваш Telegram ID:\n"
             f"<code>{user_id}</code>",
-            reply_markup=no_access_keyboard(),
+            reply_markup=no_access_keyboard(tenant_by_user(user_id)),
         )
         return
     if data == "contact_owner_fallback":
@@ -1457,8 +1542,48 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             q,
             "Отправьте владельцу ваш ID:\n"
             f"<code>{user_id}</code>",
-            reply_markup=no_access_keyboard(),
+            reply_markup=no_access_keyboard(tenant_by_user(user_id)),
         )
+        return
+    if data == "start_trial":
+        tenant = tenant_by_user(user_id)
+        if tenant_has_access(tenant):
+            await reply_to_callback(q, "У вас уже есть активный доступ.", reply_markup=tenant_menu())
+            return
+        trial, status = create_or_activate_trial_tenant(q.from_user)
+        if status == "used":
+            await reply_to_callback(
+                q,
+                "Вы уже использовали пробный период.\n"
+                "Для продолжения свяжитесь с владельцем.",
+                reply_markup=no_access_keyboard(tenant),
+            )
+            return
+        await reply_to_callback(
+            q,
+            "🎁 Ваш бесплатный доступ на 7 дней активирован!\n\n"
+            f"👤 Ваш логин: <code>{trial['login']}</code>\n"
+            "🔑 Временный пароль: <code>4444</code>\n\n"
+            f"🌐 Войти в кабинет: {WEB_CABINET_URL}\n\n"
+            "⚠️ После входа обязательно смените пароль \n"
+            "в разделе Настройки!\n\n"
+            f"📅 Доступ действует до: {fmt(trial['access_until'])}",
+            reply_markup=no_access_keyboard(tenant_by_user(user_id)),
+        )
+        username_text = f"@{trial['username']}" if trial.get("username") else "нет"
+        try:
+            await context.bot.send_message(
+                SUPER_ADMIN_ID,
+                "🆕 Новый триал-пользователь!\n"
+                f"👤 Имя: {trial['name']}\n"
+                f"🔗 Username: {username_text}\n"
+                f"🆔 Telegram ID: {trial['telegram_user_id']}\n"
+                f"📧 Логин создан: {trial['login']}\n"
+                "🔑 Пароль: 4444\n"
+                f"📅 Доступ до: {fmt(trial['access_until'])}",
+            )
+        except Exception:
+            logger.exception("Failed to notify super admin about trial user")
         return
     if user_id == SUPER_ADMIN_ID:
         if data == "tenant_groups":
