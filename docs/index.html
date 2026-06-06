@@ -3,23 +3,68 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Reklama Bot Mini App</title>
+  <title>Reklama Bot</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    body {
+      margin: 0;
+      padding: 20px;
+      font-family: -apple-system, sans-serif;
+      background: var(--tg-theme-bg-color, #fff);
+      color: var(--tg-theme-text-color, #000);
+    }
+    .card {
+      background: var(--tg-theme-secondary-bg-color, #f5f5f5);
+      border-radius: 12px;
+      padding: 20px;
+      margin-top: 20px;
+    }
+    h2 { margin: 0 0 10px; }
+    p { margin: 5px 0; color: #666; }
+  </style>
 </head>
 <body>
-<script>
-  const tg = window.Telegram.WebApp;
-  tg.ready();
-  tg.expand();
-  const user = tg.initDataUnsafe?.user;
-  document.body.innerHTML = user
-    ? `<h2>👋 Привет, ${user.first_name}!</h2>
-       <p>ID: ${user.id}</p>
-       <p>Mini App работает ✅</p>`
-    : `<h2>👋 Привет, тестировщик!</h2>
-       <p>Открыто в браузере</p>`;
-  tg.MainButton.setText("Открыть кабинет");
-  tg.MainButton.show();
-</script>
+  <div class="card">
+    <h2 id="greeting">Загрузка...</h2>
+    <p id="user-id"></p>
+    <p id="username"></p>
+    <p id="status"></p>
+  </div>
+  <script>
+    const tg = window.Telegram.WebApp;
+    tg.ready();
+    tg.expand();
+
+    function init() {
+      const user = tg.initDataUnsafe && tg.initDataUnsafe.user;
+      
+      if (user && user.id) {
+        document.getElementById('greeting').textContent = 
+          '👋 Привет, ' + (user.first_name || 'пользователь') + '!';
+        document.getElementById('user-id').textContent = 
+          'Telegram ID: ' + user.id;
+        document.getElementById('username').textContent = 
+          user.username ? '@' + user.username : '';
+        document.getElementById('status').textContent = 
+          '✅ Mini App работает';
+      } else {
+        document.getElementById('greeting').textContent = 
+          '👋 Открыто в браузере';
+        document.getElementById('user-id').textContent = 
+          'Telegram данные недоступны';
+        document.getElementById('status').textContent = 
+          'Откройте через бота в Telegram';
+      }
+
+      tg.MainButton.setText('Открыть кабинет');
+      tg.MainButton.show();
+    }
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', init);
+    } else {
+      init();
+    }
+  </script>
 </body>
 </html>
