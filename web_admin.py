@@ -150,11 +150,12 @@ def plain_text(value):
 async def save_uploaded_image(tenant_id, upload):
     if not upload or not getattr(upload, "filename", ""):
         return None
+    allowed_exts = {".jpg", ".jpeg", ".png", ".webp"}
     content_type = (getattr(upload, "content_type", "") or "").lower()
-    if not content_type.startswith("image/"):
-        return None
     ext = Path(upload.filename).suffix.lower()
-    if ext not in {".jpg", ".jpeg", ".png", ".webp"}:
+    if not content_type.startswith("image/") and ext not in allowed_exts:
+        return None
+    if ext not in allowed_exts:
         ext = ".jpg"
     data = await upload.read()
     if not data or len(data) > MAX_UPLOAD_BYTES:
@@ -305,7 +306,7 @@ def page(title, body, session=None):
         f"""<!doctype html>
 <html lang="ru">
 <head>
-  <meta charset="utf-8">
+  <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{esc(title)}</title>
   <style>
@@ -543,7 +544,8 @@ def page(title, body, session=None):
   <header><strong>Reklama Bot Admin</strong><nav>{nav(session)}</nav></header>
   <main>{body}</main>
 </body>
-</html>"""
+</html>""",
+        media_type="text/html; charset=utf-8",
     )
 
 
@@ -1002,7 +1004,7 @@ async def new_ad_get(request: Request):
             {image_upload_block()}
             {rich_editor("text")}
             <div class="form-grid">
-              <div><label>Старт</label><input type="datetime-local" name="start_at" value="{start_value}" required></div>
+              <div><label>Время первой публикации</label><input type="datetime-local" name="start_at" value="{start_value}" required><div class="muted">Первый пост выйдет в это время.</div></div>
               <div><label>Окончание</label><input type="datetime-local" name="end_at" value="{end_value}" required></div>
               <div><label>Интервал, минут</label><input type="number" name="interval_minutes" value="240" min="1" required></div>
             </div>
@@ -1026,7 +1028,7 @@ async def new_ad_post(request: Request):
     group_id = int(data["group_id"])
     text_html = data.get("text", "").strip()
     text = plain_text(text_html)
-    image_path = await save_uploaded_image(tenant["id"], data.get("image"))
+    image_path = await save_uploaded_image(tenant["id"], data.get("image") or data.get("photo_file"))
     start_at = parse_dt_input(data["start_at"])
     end_at = parse_dt_input(data["end_at"])
     interval = int(data["interval_minutes"])
@@ -1096,7 +1098,7 @@ async def edit_ad_get(request: Request, ad_id: int):
             {image_upload_block(ad["file_id"])}
             {rich_editor("content", content, "Текст объявления" if ad["media_type"] == "text" else "Подпись к медиа")}
             <div class="form-grid">
-              <div><label>Старт</label><input type="datetime-local" name="start_at" value="{dt_input(ad['start_at'])}" required></div>
+              <div><label>Время первой публикации</label><input type="datetime-local" name="start_at" value="{dt_input(ad['start_at'])}" required><div class="muted">Первый пост выйдет в это время.</div></div>
               <div><label>Окончание</label><input type="datetime-local" name="end_at" value="{dt_input(ad['end_at'])}" required></div>
               <div><label>Интервал, минут</label><input type="number" name="interval_minutes" value="{ad['interval_minutes']}" min="1" required></div>
             </div>
@@ -1125,7 +1127,7 @@ async def edit_ad_post(request: Request, ad_id: int):
     group_id = int(data["group_id"])
     content_html = data.get("content", "").strip()
     content = plain_text(content_html)
-    image_path = await save_uploaded_image(tenant["id"], data.get("image"))
+    image_path = await save_uploaded_image(tenant["id"], data.get("image") or data.get("photo_file"))
     remove_image = data.get("remove_image") == "1"
     start_at = parse_dt_input(data["start_at"])
     end_at = parse_dt_input(data["end_at"])
